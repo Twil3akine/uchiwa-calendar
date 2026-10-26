@@ -226,7 +226,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .calendar-week { position: relative; }
 .month-grid .day-cell { height: auto; min-height: max(87px, calc(42px + var(--event-rows) * 24px)); border-radius: 0; touch-action: manipulation; }
 .month-grid .day-cell.range-selected { background: #f4dfd2; box-shadow: inset 0 0 0 1px #cc8b70; }
-.week-events { position: absolute; top: 35px; left: 0; right: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: 24px; pointer-events: none; }
+.week-events { position: absolute; z-index: 2; top: 35px; left: 0; right: 0; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); grid-auto-rows: 24px; pointer-events: none; }
 .week-event { pointer-events: auto; min-width: 0; height: 21px; padding: 3px 7px; border: 0; border-radius: 0; text-align: left; color: #46413c; background: color-mix(in srgb, var(--member-color) 16%, white); font-size: 10px; line-height: 15px; overflow: hidden; }
 .week-event span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .week-event:hover { background: color-mix(in srgb, var(--member-color) 25%, white); }
