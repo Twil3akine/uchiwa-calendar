@@ -92,6 +92,14 @@ test("production settings reject extra credential or snapshot fields", () => {
   assert.throws(() => validateProductionSettings({ ...settings, snapshotPath: "/private/snapshot.sql" }), /only version/);
 });
 
+test("accepts a readable Worker name without changing its database", () => {
+  const settings = makeProductionSettingsFromState(state, migrations);
+  const readable = validateProductionSettings({ ...settings, workerName: "uchiwa-calendar" });
+  assert.equal(readable.databaseId, state.databaseId);
+  assert.equal(readable.accountId, state.accountId);
+  assert.throws(() => validateProductionSettings({ ...settings, workerName: "invalid_name" }), /valid Worker name/);
+});
+
 test("CLI initialization and preparation preserve the deployment across a fresh checkout", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "calendar-update-cli-"));
   try {
@@ -113,11 +121,15 @@ test("CLI initialization and preparation preserve the deployment across a fresh 
     const settings = JSON.parse(await readFile(path.join(directory, "cloudflare.production.json"), "utf8"));
     assert.equal(settings.workerName, state.workerName);
     assert.equal(settings.databaseId, state.databaseId);
+    await writeFile(path.join(directory, "cloudflare.production.json"), JSON.stringify({ ...settings, workerName: "uchiwa-calendar" }));
+    const afterRenameInit = run("--init");
+    assert.equal(afterRenameInit.status, 0, afterRenameInit.stderr);
+    assert.equal(JSON.parse(await readFile(path.join(directory, "cloudflare.production.json"), "utf8")).workerName, "uchiwa-calendar");
     await rm(path.join(directory, ".cloudflare-migration"), { recursive: true });
     const afterClone = run("--prepare-only");
     assert.equal(afterClone.status, 0, afterClone.stderr);
     const config = JSON.parse(await readFile(path.join(directory, "dist/server/cloudflare.json"), "utf8"));
-    assert.equal(config.name, state.workerName);
+    assert.equal(config.name, "uchiwa-calendar");
     assert.equal(config.d1_databases[0].database_id, state.databaseId);
     await writeFile(path.join(directory, "drizzle/0001_change.sql"), "ALTER TABLE example ADD COLUMN title TEXT;\n");
     const drift = run("--prepare-only");
@@ -127,3 +139,4 @@ test("CLI initialization and preparation preserve the deployment across a fresh 
     await rm(directory, { recursive: true, force: true });
   }
 });
+

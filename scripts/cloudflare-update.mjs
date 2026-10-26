@@ -23,7 +23,6 @@ export function validateProductionSettings(value) {
   if (value.version !== 1) throw new Error("Unsupported cloudflare.production.json version.");
   if (typeof value.accountId !== "string" || !/^[0-9a-f]{32}$/i.test(value.accountId)) throw new Error("Production accountId must be a 32-character Cloudflare account ID.");
   validateWorkerName(value.workerName);
-  if (!/^uchiwa-calendar-[0-9a-f]{24}$/.test(value.workerName)) throw new Error("Production workerName must be the unique Worker name created by the migration flow.");
   if (typeof value.databaseId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.databaseId)) throw new Error("Production databaseId must be a D1 UUID.");
   if (typeof value.databaseName !== "string" || !/^uchiwa-calendar-[0-9a-f]{6}$/.test(value.databaseName)) throw new Error("Production databaseName must match the D1 database created by the migration flow.");
   if (!Array.isArray(value.migrations) || value.migrations.length === 0) throw new Error("Production settings must record at least one SQL migration fingerprint.");
@@ -110,10 +109,10 @@ async function initializeProductionSettings() {
   const candidate = makeProductionSettingsFromState(state, migrations);
   try {
     const existing = await loadProductionSettings(PRODUCTION_FILE);
-    if (JSON.stringify(existing) !== JSON.stringify(candidate)) {
-      throw new Error("cloudflare.production.json already contains different account, Worker, D1, or migration settings. It was left unchanged; reconcile settings through the explicit migration process.");
+    if (existing.accountId !== candidate.accountId || existing.databaseId !== candidate.databaseId || existing.databaseName !== candidate.databaseName || JSON.stringify(existing.migrations) !== JSON.stringify(candidate.migrations)) {
+      throw new Error("cloudflare.production.json already contains different account, D1, or migration settings. It was left unchanged; reconcile settings through the explicit migration process.");
     }
-    console.log("cloudflare.production.json already matches migration state and migration fingerprints; no file changed.");
+    console.log("Existing production account, D1, migration fingerprints, and current Worker name were preserved; no file changed.");
     return;
   } catch (error) {
     if (!error.message.startsWith("Production settings not found.")) throw error;
@@ -206,3 +205,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     process.exitCode = 1;
   });
 }
+

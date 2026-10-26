@@ -42,6 +42,25 @@ node scripts/cloudflare-update.mjs
 
 `drizzle/`のSQLが適用済みの状態と変わった場合は、安全のため公開を停止します。データベースの形式変更は、既存データを保持する移行手順を確認してから進めてください。公開を通すために照合情報だけを書き換えないでください。
 
+## 公開URLを短くする
+
+初回移行で付けたランダムなWorker名を、`uchiwa-calendar`へ変更する場合は、GitHubの最新コードを取得してから実行します。
+
+```sh
+git pull --ff-only origin master
+node scripts/cloudflare-rename.mjs --commit
+```
+
+変更後の公開先は`https://uchiwa-calendar.twil3akine.workers.dev`です。このコマンドを実行して確認が完了するまでは、元の公開先を利用します。
+
+同じ名前の既存Workerがある場合や、確認できないエラーが出た場合は停止します。新しいWorkerには既存のD1を接続し、新しいURLの応答を確認してから、元のWorkerを新URLへの転送用に更新します。D1の再作成、予定の再取り込み、元のWorkerの削除は行いません。
+
+旧URLをブラウザーで開くと、そのカレンダーについて端末内に保存されている本人情報を個人リンクの形式で新URLへ引き継ぎます。本人情報はURLの`#`以降だけで渡し、転送サーバーへは送りません。端末内の情報が削除されている場合は、保存していた個人リンクから新URLを開いてください。
+
+`--commit`を付けた場合は、成功後の`cloudflare.production.json`だけをコミットして`origin/master`へpushします。実行前に追跡対象のファイルとステージが変更されていないことを確認します。Gitへの反映が失敗しても、公開やデータベースを作り直さないでください。表示された手順で設定ファイルのコミット・pushだけを完了できます。
+
+完了後の通常更新は、引き続き`node scripts/cloudflare-update.mjs`で行います。
+
 ## 切り替え前の確認
 
 同梱の`migration/source.sql`は準備時点のデータの複製です。元のSites版を使い続けている場合、書き出し後の登録・編集は自動では同期されません。**最終切り替え時は登録・編集を一時停止し、最新データを再取得してから移行する必要があります。** 検証段階の新URLを本番としてメンバーへ配らないでください。
@@ -55,3 +74,4 @@ node scripts/cloudflare-update.mjs
 - [現在のカレンダー](https://uchiwa-calendar.stonymink4097.chatgpt.site/)
 - [D1のインポート・エクスポート](https://developers.cloudflare.com/d1/best-practices/import-export-data/)
 - [Wrangler](https://developers.cloudflare.com/workers/wrangler/)
+
