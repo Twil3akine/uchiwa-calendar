@@ -51,7 +51,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .cell-events { display: block; align-self: stretch; margin-top: 4px; }
 .cell-event { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 3px; padding: 3px 5px; border-radius: 4px; background: color-mix(in srgb, var(--member-color) 12%, white); border-left: 2px solid var(--member-color); color: #56524d; font-size: 9px; line-height: 1.2; }
 .calendar-foot { display: flex; justify-content: space-between; color: #a09d94; padding: 10px 1px 0; font-size: 10px; }
-.calendar-foot span:first-child { display: flex; align-items: center; gap: 6px; }
+.calendar-foot > span:first-child { display: flex; align-items: center; gap: 6px; }
 .mobile-calendar-help { display: none; }
 .today-legend { width: 8px; height: 8px; border-radius: 50%; background: var(--terra); }
 .agenda-card { padding: 20px 17px 15px; display: flex; flex-direction: column; min-height: 590px; }
