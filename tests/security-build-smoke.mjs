@@ -18,7 +18,19 @@ try {
   assert.ok(page.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
   assert.equal(page.headers.get('referrer-policy'),'no-referrer');
   assert.equal(page.headers.get('cache-control'),'no-store');
-  await page.arrayBuffer();
+  const html=await page.text();
+  const meta=(name)=>{
+    const tag=html.match(new RegExp(`<meta[^>]*(?:property|name)="${name}"[^>]*>`))?.[0];
+    return tag?.match(/content="([^"]*)"/)?.[1];
+  };
+  assert.equal(meta('og:image'),'https://uchiwa-calendar.twil3akine.workers.dev/og.png');
+  assert.equal(new URL(meta('og:url')).href,'https://uchiwa-calendar.twil3akine.workers.dev/');
+  assert.equal(meta('twitter:card'),'summary_large_image');
+  const png=await readFile('public/og.png');
+  assert.equal(png.readUInt32BE(16),1200);assert.equal(png.readUInt32BE(20),630);
+  const shared=await mf.dispatchFetch('https://test.local/?c=00000000-0000-4000-8000-000000000001');
+  const sharedHtml=await shared.text();
+  assert.ok(sharedHtml.includes('https://uchiwa-calendar.twil3akine.workers.dev/og.png'));
   async function send(endpoint,body,cookie,method='POST') {
     return mf.dispatchFetch('https://test.local'+endpoint,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':'203.0.113.9',...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
   }
