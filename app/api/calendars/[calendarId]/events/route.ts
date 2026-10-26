@@ -1,4 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import type { CalendarEvent } from "../../../../../lib/calendar-types";
+import { LIMITS, rateLimit } from "../../../../../lib/server/security";
 import { getDb } from "../../../../../db";
 import { calendarEvents, calendars } from "../../../../../db/schema";
 import { requireMember } from "../../../../../lib/server/auth";
@@ -9,6 +11,7 @@ type Context = { params: Promise<{ calendarId: string }> };
 export async function POST(request: Request, { params }: Context) {
   try {
     requireSameOrigin(request);
+    await rateLimit(request, "write");
     const { calendarId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 4096);
@@ -31,7 +34,12 @@ export async function POST(request: Request, { params }: Context) {
     }
     let event;
     try {
-      [event] = await db.insert(calendarEvents).values({ id: body.id, calendarId, memberId: member.id, title, startDate, endDate }).returning({ id: calendarEvents.id, memberId: calendarEvents.memberId, title: calendarEvents.title, startDate: calendarEvents.startDate, endDate: calendarEvents.endDate, version: calendarEvents.version });
+      event = await db.get<CalendarEvent>(sql`INSERT INTO calendar_events (id, calendar_id, member_id, title, start_date, end_date)
+        SELECT ${body.id}, ${calendarId}, ${member.id}, ${title}, ${startDate}, ${endDate}
+        WHERE (SELECT COUNT(*) FROM calendar_events WHERE calendar_id = ${calendarId}) < ${LIMITS.events}
+          AND (SELECT COUNT(*) FROM calendar_events WHERE calendar_id = ${calendarId} AND member_id = ${member.id}) < ${LIMITS.memberEvents}
+        RETURNING id, member_id AS memberId, title, start_date AS startDate, end_date AS endDate, version`);
+      if (!event) throw new HttpError(409, `予定数の上限（カレンダー${LIMITS.events}件・1人${LIMITS.memberEvents}件）に達しています。`);
     } catch (error) {
       // Two retries can race after both observe an unused id. Re-read the winner
       // and preserve the same idempotency behavior as the non-racing path.

@@ -27,6 +27,11 @@ const miniflare = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: '2026-05-15',
   compatibilityFlags: ['nodejs_compat'],
   d1Databases: ['DB'],
+  ratelimits: {
+    CREATE_LIMIT: { namespace_id: '913421', simple: { limit: 5, period: 60 } },
+    WRITE_LIMIT: { namespace_id: '913422', simple: { limit: 60, period: 60 } },
+    READ_LIMIT: { namespace_id: '913423', simple: { limit: 120, period: 60 } },
+  },
 }));
 
 const originalFetch = globalThis.fetch;

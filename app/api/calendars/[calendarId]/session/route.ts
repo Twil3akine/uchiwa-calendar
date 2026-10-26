@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { calendars } from "../../../../../db/schema";
+import { rateLimit } from "../../../../../lib/server/security";
 import { findMemberBySecret, validateSecret } from "../../../../../lib/server/auth";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, sessionCookie } from "../../../../../lib/server/http";
 
@@ -9,6 +10,7 @@ type Context = { params: Promise<{ calendarId: string }> };
 export async function POST(request: Request, { params }: Context) {
   try {
     requireSameOrigin(request);
+    await rateLimit(request, "write");
     const { calendarId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 4096);

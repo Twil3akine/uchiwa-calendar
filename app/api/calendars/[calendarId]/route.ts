@@ -3,6 +3,7 @@ import { getDb } from "../../../../db";
 import { calendarEvents, calendars, members } from "../../../../db/schema";
 import { cookieName, cookieValue, fail, HttpError, json, requireCalendarId } from "../../../../lib/server/http";
 import { findMemberBySecret } from "../../../../lib/server/auth";
+import { rateLimit } from "../../../../lib/server/security";
 
 type Context = { params: Promise<{ calendarId: string }> };
 
@@ -10,6 +11,7 @@ export async function GET(request: Request, { params }: Context) {
   try {
     const { calendarId } = await params;
     requireCalendarId(calendarId);
+    await rateLimit(request, "read");
     const db = getDb();
     const [calendar] = await db.select({ id: calendars.id, name: calendars.name }).from(calendars).where(eq(calendars.id, calendarId)).limit(1);
     if (!calendar) throw new HttpError(404, "カレンダーが見つかりません。");

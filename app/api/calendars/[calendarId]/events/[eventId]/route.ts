@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "../../../../../../db";
 import { calendarEvents } from "../../../../../../db/schema";
 import { requireMember } from "../../../../../../lib/server/auth";
+import { rateLimit } from "../../../../../../lib/server/security";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, requiredString, validDate } from "../../../../../../lib/server/http";
 
 type Context = { params: Promise<{ calendarId: string; eventId: string }> };
@@ -21,6 +22,7 @@ async function ownedEvent(calendarId: string, eventId: string, memberId: string)
 export async function PATCH(request: Request, { params }: Context) {
   try {
     requireSameOrigin(request);
+    await rateLimit(request, "write");
     const { calendarId, eventId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 4096);
@@ -44,6 +46,7 @@ export async function PATCH(request: Request, { params }: Context) {
 export async function DELETE(request: Request, { params }: Context) {
   try {
     requireSameOrigin(request);
+    await rateLimit(request, "write");
     const { calendarId, eventId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 2048);

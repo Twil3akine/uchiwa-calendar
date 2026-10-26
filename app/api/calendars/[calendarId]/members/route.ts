@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { calendars } from "../../../../../db/schema";
+import { LIMITS, rateLimit } from "../../../../../lib/server/security";
 import { findMemberBySecret, hashSecret, validateSecret } from "../../../../../lib/server/auth";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, requiredString, sessionCookie } from "../../../../../lib/server/http";
 
@@ -10,6 +11,7 @@ const palette = ["#2563eb", "#db2777", "#059669", "#d97706", "#7c3aed", "#0891b2
 export async function POST(request: Request, { params }: Context) {
   try {
     requireSameOrigin(request);
+    await rateLimit(request, "write");
     const { calendarId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 4096);
@@ -28,7 +30,7 @@ export async function POST(request: Request, { params }: Context) {
     const id = crypto.randomUUID();
     const colorCase = sql`CASE ((SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) % ${palette.length}) ${sql.join(palette.map((color, index) => sql`WHEN ${index} THEN ${color}`), sql` `)} END`;
     try {
-      await db.run(sql`INSERT INTO members (member_id, calendar_id, name, color, secret_hash) SELECT ${id}, ${calendarId}, ${name}, ${colorCase}, ${secretHash}`);
+      await db.run(sql`INSERT INTO members (member_id, calendar_id, name, color, secret_hash) SELECT ${id}, ${calendarId}, ${name}, ${colorCase}, ${secretHash} WHERE (SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) < ${LIMITS.members}`);
     } catch (error) {
       // A simultaneous retry can race on the calendar/secret unique index.
       const raced = await findMemberBySecret(calendarId, secret);
@@ -37,7 +39,7 @@ export async function POST(request: Request, { params }: Context) {
       return json({ member: raced }, 200, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
     }
     const member = await findMemberBySecret(calendarId, secret);
-    if (!member) throw new HttpError(500, "参加者を登録できませんでした。");
+    if (!member) throw new HttpError(409, `参加者は${LIMITS.members}人までです。`);
     return json({ member }, 201, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
   } catch (error) {
     return fail(error);

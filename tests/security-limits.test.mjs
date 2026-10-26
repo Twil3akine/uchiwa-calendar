@@ -1,0 +1,94 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { layoutWeek } from '../lib/calendar-layout.ts';
+
+const require = createRequire(import.meta.resolve('wrangler/package.json'));
+const esbuild = require('esbuild');
+const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
+const source = await esbuild.build({ entryPoints: [fileURLToPath(new URL('./api-worker.ts', import.meta.url))], bundle: true, format: 'esm', platform: 'browser', target: 'es2022', external: ['cloudflare:workers'], write: false });
+
+export async function fixture() {
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: source.outputFiles[0].text, compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], cf: false,
+    ratelimits: Object.fromEntries([['CREATE_LIMIT',5],['WRITE_LIMIT',60],['READ_LIMIT',120]].map(([name,limit],i)=>[name,{namespace_id:String(913421+i),simple:{limit,period:60}}])) }));
+  const db = await mf.getD1Database('DB');
+  const sql = await readFile(new URL('../drizzle/0000_lean_omega_red.sql', import.meta.url), 'utf8');
+  await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
+  async function request(path, method='GET', body, cookie, ip='203.0.113.1') {
+    return mf.dispatchFetch('https://test.local'+path,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':ip,...(cookie?{Cookie:cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  }
+  const cid=crypto.randomUUID();
+  await db.prepare('INSERT INTO calendars (id,name) VALUES (?,?)').bind(cid,'security fixture').run();
+  const joined=await request(`/api/calendars/${cid}/members`,'POST',{name:'owner',secret:'a'.repeat(43)});
+  assert.equal(joined.status,201);
+  const member=(await joined.json()).member;
+  const cookie=joined.headers.get('set-cookie').split(';')[0];
+  return {mf,db,cid,member,cookie,request};
+}
+
+test('native rate limiter rejects excessive anonymous creation with 429 and Retry-After',async()=>{
+  const f=await fixture();try {
+    const results=[];for(let i=0;i<7;i++)results.push(await f.request('/api/calendars','POST',{name:'test'}));
+    assert.equal(results[0].status,201);assert.equal(results.at(-1).status,429);
+    assert.equal(results.at(-1).headers.get('retry-after'),'60');
+    assert.equal((await f.request('/api/calendars','POST',{name:'another'},undefined,'203.0.113.2')).status,201);
+  }finally{await f.mf.dispose();}
+});
+test('missing rate-limit bindings fail closed before touching the database',async()=>{
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:source.outputFiles[0].text,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],cf:false}));
+  try {
+    const res=await mf.dispatchFetch('https://test.local/api/calendars',{method:'POST',headers:{Origin:'https://test.local','Content-Type':'application/json'},body:JSON.stringify({name:'blocked'})});
+    assert.equal(res.status,503);
+  }finally{await mf.dispose();}
+});
+test('calendar quota is atomic under concurrent inserts',async()=>{
+  const f=await fixture();try {
+    await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4998) INSERT INTO calendars(id,name) SELECT printf('seed-%d',x),'seed' FROM n").run();
+    const res=await Promise.all([f.request('/api/calendars','POST',{name:'a'}),f.request('/api/calendars','POST',{name:'b'})]);
+    assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendars').first()).n,5000);
+  }finally{await f.mf.dispose();}
+});
+test('member and event caps preserve existing data, retries and concurrent boundaries',async()=>{
+  const f=await fixture();try {
+    const members=Array.from({length:48},(_,i)=>f.db.prepare('INSERT INTO members(member_id,calendar_id,name,secret_hash) VALUES (?,?,?,?)').bind(crypto.randomUUID(),f.cid,'seed','seed-'+i));
+    await f.db.batch(members);
+    const res=await Promise.all(['b','c'].map(s=>f.request(`/api/calendars/${f.cid}/members`,'POST',{name:s,secret:s.repeat(43)})));
+    assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
+    await f.db.batch(Array.from({length:199},()=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(crypto.randomUUID(),f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const body={id:crypto.randomUUID(),title:'boundary',startDate:'2026-10-26',endDate:'2026-10-26'};
+    const posts=await Promise.all([f.request(`/api/calendars/${f.cid}/events`,'POST',body,f.cookie),f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:crypto.randomUUID()},f.cookie)]);
+    assert.deepEqual(posts.map(r=>r.status).sort(),[201,409]);
+    const accepted=await posts.find(r=>r.status===201).json();
+    const retry=await f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:accepted.event.id},f.cookie);
+    assert.equal(retry.status,200);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,200);
+  }finally{await f.mf.dispose();}
+});
+test('streamed input is cancelled before reading an oversized body in full',async()=>{
+  const compiled=await esbuild.transform(await readFile(new URL('../lib/server/http.ts',import.meta.url),'utf8'),{loader:'ts',format:'esm'});
+  const {readJson}=await import('data:text/javascript;base64,'+Buffer.from(compiled.code).toString('base64'));
+  let chunks=0,cancelled=false;
+  const body=new ReadableStream({pull(c){chunks++;if(chunks<=100)c.enqueue(new Uint8Array(1024));else c.close();},cancel(){cancelled=true;}});
+  await assert.rejects(readJson(new Request('https://test.local',{method:'POST',headers:{'content-type':'application/json'},body,duplex:'half'}),2048),e=>e.status===413);
+  assert.ok(chunks<10);assert.equal(cancelled,true);
+});
+test('calendar-wide event quota is enforced even when the writer is below their own cap',async()=>{
+  const f=await fixture();try {
+    const other=crypto.randomUUID();
+    await f.db.prepare('INSERT INTO members(member_id,calendar_id,name,secret_hash) VALUES (?,?,?,?)').bind(other,f.cid,'legacy','legacy').run();
+    await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<999) INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) SELECT printf('seed-event-%d',x),?,?,'legacy','2026-10-26','2026-10-26' FROM n").bind(f.cid,other).run();
+    const body={title:'boundary',startDate:'2026-10-26',endDate:'2026-10-26'};
+    const res=await Promise.all([1,2].map(()=>f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:crypto.randomUUID()},f.cookie)));
+    assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,1000);
+  }finally{await f.mf.dispose();}
+});
+test('dense event bands use at most three visible lanes with overflow markers',()=>{
+  const days=['2026-10-25','2026-10-26','2026-10-27','2026-10-28','2026-10-29','2026-10-30','2026-10-31'];
+  const spans=layoutWeek(days,Array.from({length:1000},(_,i)=>({id:String(i),memberId:'m',title:'busy',startDate:days[0],endDate:days[6],version:1})),3);
+  assert.equal(spans.filter(s=>s.lane<3).length,3);assert.equal(spans.filter(s=>s.lane===3).length,997);
+});
+

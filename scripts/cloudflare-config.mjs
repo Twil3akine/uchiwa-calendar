@@ -37,6 +37,11 @@ export function makeCloudflareConfig(source, { accountId, databaseId, databaseNa
     jsx_factory: source.jsx_factory,
     jsx_fragment: source.jsx_fragment,
     workers_dev: true,
+    ratelimits: [
+      { name: "CREATE_LIMIT", namespace_id: "913421", simple: { limit: 5, period: 60 } },
+      { name: "WRITE_LIMIT", namespace_id: "913422", simple: { limit: 60, period: 60 } },
+      { name: "READ_LIMIT", namespace_id: "913423", simple: { limit: 120, period: 60 } },
+    ],
     observability: source.observability ?? { enabled: true },
     vars: source.vars ?? {},
     d1_databases: databaseId

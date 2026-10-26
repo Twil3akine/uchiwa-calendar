@@ -7,11 +7,14 @@ export class HttpError extends Error {
 export function json(data: unknown, status = 200, headers?: HeadersInit) {
   const resultHeaders = new Headers(headers);
   resultHeaders.set("Content-Type", "application/json; charset=utf-8");
+  resultHeaders.set("Cache-Control", "no-store");
+  resultHeaders.set("Referrer-Policy", "no-referrer");
+  resultHeaders.set("X-Content-Type-Options", "nosniff");
   return Response.json(data, { status, headers: resultHeaders });
 }
 
 export function fail(error: unknown) {
-  if (error instanceof HttpError) return json({ error: error.message }, error.status);
+  if (error instanceof HttpError) return json({ error: error.message }, error.status, error.status === 429 ? { "Retry-After": "60" } : undefined);
   return json({ error: "サーバーでエラーが発生しました。" }, 500);
 }
 
@@ -21,8 +24,27 @@ export async function readJson(request: Request, maxBytes = 8192): Promise<Recor
   }
   const length = Number(request.headers.get("content-length") ?? 0);
   if (length > maxBytes) throw new HttpError(413, "送信内容が大きすぎます。");
-  const raw = await request.text();
-  if (new TextEncoder().encode(raw).byteLength > maxBytes) throw new HttpError(413, "送信内容が大きすぎます。");
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  if (reader) {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > maxBytes) {
+          void reader.cancel().catch(() => {});
+          throw new HttpError(413, "送信内容が大きすぎます。");
+        }
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+  }
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  const raw = new TextDecoder().decode(bytes);
   let value: unknown;
   try {
     value = JSON.parse(raw);

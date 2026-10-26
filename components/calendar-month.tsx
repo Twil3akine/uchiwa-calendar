@@ -22,7 +22,7 @@ export default function CalendarMonth({ days, month, today, selected, events, me
   const [range, setRange] = useState<Range | null>(null);
   const weeks = useMemo(() => Array.from({ length: Math.ceil(days.length / 7) }, (_, i) => {
     const week = days.slice(i * 7, i * 7 + 7);
-    return { days: week, segments: layoutWeek(week, events) };
+    return { days: week, segments: layoutWeek(week, events, 3) };
   }), [days, events]);
 
   useEffect(() => () => cleanup.current?.(), []);
@@ -82,13 +82,17 @@ export default function CalendarMonth({ days, month, today, selected, events, me
           </button>;
         })}
         <div className="week-events">
-          {week.segments.map(segment => <button type="button" key={segment.event.id}
+          {week.segments.filter(segment => segment.lane < 3).map(segment => <button type="button" key={segment.event.id}
             className={`week-event ${segment.startsHere ? "event-start" : "event-continued"} ${segment.endsHere ? "event-end" : "event-continues"}`}
             style={{ gridColumn: `${segment.start + 1} / ${segment.end + 1}`, gridRow: segment.lane + 1, "--member-color": members.find(member => member.id === segment.event.memberId)?.color || "#bd6749" } as CSSProperties}
             title={`${segment.event.title}（${segment.event.startDate} ～ ${segment.event.endDate}）`}
             onClick={() => onSelect(week.days[segment.start])}>
             <span>{segment.event.title}</span>
           </button>)}
+          {week.days.map((day, column) => {
+            const hidden = week.segments.filter(segment => segment.lane >= 3 && column >= segment.start && column < segment.end).length;
+            return hidden ? <button type="button" key={day} className="week-event week-more" style={{ gridColumn: column + 1, gridRow: 4 }} onClick={() => onSelect(day)} aria-label={`${day}のほか${hidden}件の予定を表示`}>ほか{hidden}件</button> : null;
+          })}
         </div>
       </div>;
     })}

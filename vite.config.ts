@@ -18,6 +18,11 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  ratelimits: [
+    { name: "CREATE_LIMIT", namespace_id: "913421", simple: { limit: 5, period: 60 as const } },
+    { name: "WRITE_LIMIT", namespace_id: "913422", simple: { limit: 60, period: 60 as const } },
+    { name: "READ_LIMIT", namespace_id: "913423", simple: { limit: 120, period: 60 as const } },
+  ],
   d1_databases: d1
     ? [
         {
