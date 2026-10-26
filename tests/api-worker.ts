@@ -1,7 +1,7 @@
 import { POST as createCalendar } from "../app/api/calendars/route";
 import { GET as getCalendar } from "../app/api/calendars/[calendarId]/route";
 import { POST as joinCalendar } from "../app/api/calendars/[calendarId]/members/route";
-import { POST as createSession } from "../app/api/calendars/[calendarId]/session/route";
+import { POST as createSession, PATCH as rotateSession } from "../app/api/calendars/[calendarId]/session/route";
 import { POST as createEvent } from "../app/api/calendars/[calendarId]/events/route";
 import {
   DELETE as deleteEvent,
@@ -16,6 +16,7 @@ function route(method: string, pathname: string) {
   if (membersMatch && method === "POST") return { handler: joinCalendar, params: { calendarId: decodeURIComponent(membersMatch[1]) } };
   const sessionMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/session$/);
   if (sessionMatch && method === "POST") return { handler: createSession, params: { calendarId: decodeURIComponent(sessionMatch[1]) } };
+  if (sessionMatch && method === "PATCH") return { handler: rotateSession, params: { calendarId: decodeURIComponent(sessionMatch[1]) } };
   const eventsMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/events$/);
   if (eventsMatch && method === "POST") return { handler: createEvent, params: { calendarId: decodeURIComponent(eventsMatch[1]) } };
   const eventMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/events\/([^/]+)$/);

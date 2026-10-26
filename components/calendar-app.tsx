@@ -12,6 +12,7 @@ const iso = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).pa
 const fromIso = (s: string) => new Date(`${s}T00:00:00.000Z`);
 const isBetween = (day: string, start: string, end: string) => day >= start && day <= end;
 const tokenKey = (cid: string) => `uchiwa:secret:${cid}`;
+const pendingTokenKey = (cid: string) => `uchiwa:pending-secret:${cid}`;
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { "content-type": "application/json", ...init?.headers } });
@@ -45,7 +46,7 @@ export default function CalendarApp() {
   const [today, setToday] = useState("");
   const [selected, setSelected] = useState("");
   const [muted, setMuted] = useState<string[]>([]);
-  const [modal, setModal] = useState<"event" | "join" | "settings" | "delete" | "switch" | null>(null);
+  const [modal, setModal] = useState<"event" | "join" | "settings" | "delete" | "switch" | "rotate" | null>(null);
   const [draft, setDraft] = useState({ title: "", startDate: "", endDate: "" });
   const [editing, setEditing] = useState<CalendarEvent | null>(null);
   const [pendingEvent, setPendingEvent] = useState(false);
@@ -71,9 +72,23 @@ export default function CalendarApp() {
       let next: CalendarData;
       if (token) {
         await request<{ member: Member }>(`/api/calendars/${encodeURIComponent(calendarId)}/session`, { method: "POST", body: JSON.stringify({ secret: token }) });
+        localStorage.removeItem(pendingTokenKey(calendarId));
         next = await request<CalendarData>(`/api/calendars/${encodeURIComponent(calendarId)}`);
       } else {
         next = await request<CalendarData>(`/api/calendars/${encodeURIComponent(calendarId)}`);
+        // Recover a rotation whose response was lost, before falling back to the previous key.
+        const pending = localStorage.getItem(pendingTokenKey(calendarId));
+        if (pending) {
+          try {
+            await request(`/api/calendars/${encodeURIComponent(calendarId)}/session`, { method: "POST", body: JSON.stringify({ secret: pending }) });
+            localStorage.setItem(tokenKey(calendarId), pending);
+            localStorage.removeItem(pendingTokenKey(calendarId));
+            next = await request<CalendarData>(`/api/calendars/${encodeURIComponent(calendarId)}`);
+          } catch (pendingError) {
+            // A previous PATCH can still be in flight. Keep its candidate key for the next load.
+            if ((pendingError as Error & { status?: number }).status !== 401) throw pendingError;
+          }
+        }
         const saved = typeof localStorage !== "undefined" ? localStorage.getItem(tokenKey(calendarId)) || undefined : undefined;
         if (saved && !next.me) {
           try {
@@ -198,6 +213,23 @@ export default function CalendarApp() {
     const ok = await load(cid, incomingSecret);
     if (ok) { localStorage.setItem(tokenKey(cid), incomingSecret); clearPersonHash(); setIncomingSecret(""); setModal(null); }
   }
+  async function rotatePersonalLink() {
+    if (busy || !data?.me) return;
+    setBusy(true); setError("");
+    try {
+      const secret = localStorage.getItem(pendingTokenKey(cid)) || makeToken();
+      // Save before sending: an interrupted response must not lose the only valid key.
+      localStorage.setItem(pendingTokenKey(cid), secret);
+      await request(`${root}/session`, { method: "PATCH", body: JSON.stringify({ confirm: true, secret }) });
+      localStorage.setItem(tokenKey(cid), secret);
+      localStorage.removeItem(pendingTokenKey(cid));
+      clearPersonHash(); setCopied(""); setModal("settings");
+    } catch (e) {
+      const status = (e as Error & { status?: number }).status;
+      if (status && [400, 403, 429, 503].includes(status)) localStorage.removeItem(pendingTokenKey(cid));
+      setError(e instanceof Error ? e.message : "再発行できませんでした。再読み込みして状態を確認してください。");
+    } finally { setBusy(false); }
+  }
   async function copyLink(personal = false) {
     const secret = localStorage.getItem(tokenKey(cid));
     if (personal && !secret) { setError("この端末には個人リンクが保存されていません。保管している個人リンクから開き直してください。"); return; }
@@ -225,8 +257,9 @@ export default function CalendarApp() {
       {modal === "join" && <><div className="dialog-icon"><Users size={20}/></div><p className="eyebrow">JOIN THE CALENDAR</p><h2 id="dialog-title">メンバーとして参加</h2><p className="dialog-copy">名前を登録すると、予定にあなたの色が付きます。登録時にこのブラウザー用の個人リンクを作成します。</p><form onSubmit={join}><label htmlFor="member-name">表示名</label><input ref={inputRef} id="member-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例：さくら" maxLength={40} required/><div className="dialog-actions"><button type="button" className="secondary-button" onClick={closeModal} disabled={busy}>あとで</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <ArrowRight size={17}/>}参加する</button></div></form>{error && <p className="inline-error" role="alert">{error}</p>}</>}
       {modal === "event" && <><div className="dialog-icon"><CalendarDays size={20}/></div><p className="eyebrow">{editing ? "EDIT EVENT" : "NEW EVENT"}</p><h2 id="dialog-title">{editing ? "予定を編集" : "予定を追加"}</h2><form onSubmit={saveEvent}><label htmlFor="event-title">予定の名前</label><input ref={inputRef} id="event-title" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="例：公園でピクニック" maxLength={100} required/><div className="date-fields"><div><label htmlFor="event-start">開始日</label><input id="event-start" type="date" value={draft.startDate} onInput={(e) => { const value = e.currentTarget.value; setDraft((current) => ({ ...current, startDate: value, endDate: current.endDate < value ? value : current.endDate })); }} onChange={(e) => setDraft({ ...draft, startDate: e.target.value, endDate: draft.endDate < e.target.value ? e.target.value : draft.endDate })} required/></div><div><label htmlFor="event-end">終了日</label><input id="event-end" type="date" value={draft.endDate} min={draft.startDate} onInput={(e) => { const value = e.currentTarget.value; setDraft((current) => ({ ...current, endDate: value })); }} onChange={(e) => setDraft({ ...draft, endDate: e.target.value })} required/></div></div><p className="form-hint">終日予定です。1日だけなら開始日と終了日を同じ日にします。</p>{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions">{editing && <button type="button" className="delete-button" onClick={() => setModal("delete")} disabled={busy}><Trash2 size={16}/>削除</button>}<button type="button" className="secondary-button" onClick={closeModal} disabled={busy}>キャンセル</button><button className="primary-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17}/> : <Check size={17}/>}保存する</button></div></form></>}
       {modal === "delete" && <><div className="dialog-icon danger"><Trash2 size={20}/></div><p className="eyebrow">DELETE EVENT</p><h2 id="dialog-title">予定を削除しますか？</h2><p className="dialog-copy">「{editing?.title}」{editing?.startDate === editing?.endDate ? `（${editing?.startDate}）` : `（${editing?.startDate} ～ ${editing?.endDate}）`}をカレンダーから削除します。この操作は取り消せません。</p>{error && <p role="alert" className="inline-error">{error}</p>}<div className="dialog-actions"><button className="secondary-button" onClick={() => setModal("event")} disabled={busy}>キャンセル</button><button className="danger-button" onClick={deleteEvent} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <Trash2 size={16}/>}削除する</button></div></>}
-      {modal === "settings" && <><div className="dialog-icon"><Settings2 size={20}/></div><p className="eyebrow">YOUR SETTINGS</p><h2 id="dialog-title">共有と設定</h2><p className="dialog-copy">みんなで見る共有リンクと、あなたの参加情報を含む個人リンクがあります。</p><div className="link-option"><div className="link-icon"><Users size={17}/></div><div><strong>共有リンク</strong><p>カレンダーを見たり、参加したりできます。</p></div><button className="copy-link-button" onClick={() => void copyLink()}>{copied === "shared" ? <Check size={15}/> : <Copy size={15}/>}{copied === "shared" ? "コピー済み" : "コピー"}</button></div>{data?.me && <div className="link-option personal"><div className="link-icon"><LockKeyhole size={17}/></div><div><strong>あなたの個人リンク</strong><p>あなた専用のリンクです。誰にも共有しないでください。</p></div><button className="copy-link-button" onClick={() => void copyLink(true)}>{copied === "personal" ? <Check size={15}/> : <Copy size={15}/>}{copied === "personal" ? "コピー済み" : "コピー"}</button></div>}{data?.me ? <div className="settings-member"><span className="avatar" style={{ background: data.me.color }}>{data.me.name.slice(0, 1)}</span><div><strong>{data.me.name}</strong><small>このブラウザーに参加情報を保存しています</small></div></div> : <><p className="form-hint">個人リンクはメンバー参加後に発行されます。</p><button className="join-button full-join" onClick={() => { setModal("join"); setPendingEvent(false); }}>メンバーとして参加</button></>}<div className="dialog-actions"><button className="secondary-button" onClick={closeModal} disabled={busy}>閉じる</button></div>{error && <p className="inline-error" role="alert">{error}</p>}</>}
+      {modal === "settings" && <><div className="dialog-icon"><Settings2 size={20}/></div><p className="eyebrow">YOUR SETTINGS</p><h2 id="dialog-title">共有と設定</h2><p className="dialog-copy">みんなで見る共有リンクと、あなたの参加情報を含む個人リンクがあります。</p><div className="link-option"><div className="link-icon"><Users size={17}/></div><div><strong>共有リンク</strong><p>カレンダーを見たり、参加したりできます。</p></div><button className="copy-link-button" onClick={() => void copyLink()}>{copied === "shared" ? <Check size={15}/> : <Copy size={15}/>}{copied === "shared" ? "コピー済み" : "コピー"}</button></div>{data?.me && <div className="link-option personal"><div className="link-icon"><LockKeyhole size={17}/></div><div><strong>あなたの個人リンク</strong><p>あなた専用のリンクです。誰にも共有しないでください。</p></div><button className="copy-link-button" onClick={() => void copyLink(true)}>{copied === "personal" ? <Check size={15}/> : <Copy size={15}/>}{copied === "personal" ? "コピー済み" : "コピー"}</button></div>}{data?.me ? <div className="settings-member"><span className="avatar" style={{ background: data.me.color }}>{data.me.name.slice(0, 1)}</span><div><strong>{data.me.name}</strong><small>このブラウザーに参加情報を保存しています</small></div></div> : <><p className="form-hint">個人リンクはメンバー参加後に発行されます。</p><button className="join-button full-join" onClick={() => { setModal("join"); setPendingEvent(false); }}>メンバーとして参加</button></>}{data?.me && <button className="delete-button" onClick={() => { setError(""); setModal("rotate"); }}>個人リンクを再発行</button>}<div className="dialog-actions"><button className="secondary-button" onClick={closeModal} disabled={busy}>閉じる</button></div>{error && <p className="inline-error" role="alert">{error}</p>}</>}
       {modal === "switch" && <><div className="dialog-icon"><LockKeyhole size={20}/></div><p className="eyebrow">PERSONAL LINK</p><h2 id="dialog-title">参加者を切り替えますか？</h2><p className="dialog-copy">このブラウザーには別のメンバーの参加情報が保存されています。リンクの参加者に切り替えると、このブラウザーでの予定編集者が変わります。</p>{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><button className="secondary-button" onClick={closeModal} disabled={busy}>今の参加者を使う</button><button className="primary-button" onClick={() => void switchToIncoming()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : null}切り替える</button></div></>}
+      {modal === "rotate" && <><div className="dialog-icon danger"><LockKeyhole size={20}/></div><h2 id="dialog-title">個人リンクを再発行しますか？</h2><p className="dialog-copy">以前の個人リンクと、ほかの端末の参加情報はすべて無効になります。予定・名前・色はそのまま引き継ぎます。再発行後に新しい個人リンクを保管してください。</p>{error && <p className="inline-error" role="alert">{error}</p>}<div className="dialog-actions"><button className="secondary-button" disabled={busy} onClick={() => setModal("settings")}>キャンセル</button><button className="danger-button" disabled={busy} onClick={() => void rotatePersonalLink()}>{busy ? <LoaderCircle className="spin" size={16}/> : <LockKeyhole size={16}/>}再発行して以前のリンクを無効にする</button></div></>}
     </div></div>}
   </main>;
 }

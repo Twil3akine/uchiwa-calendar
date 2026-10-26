@@ -92,3 +92,35 @@ test('dense event bands use at most three visible lanes with overflow markers',(
   assert.equal(spans.filter(s=>s.lane<3).length,3);assert.equal(spans.filter(s=>s.lane===3).length,997);
 });
 
+test('rotation revokes old cookies and links while preserving identity, color and event ownership',async()=>{
+  const f=await fixture();try {
+    const base=`/api/calendars/${f.cid}`;
+    const draft={id:crypto.randomUUID(),title:'keep me',startDate:'2026-10-26',endDate:'2026-10-28'};
+    assert.equal((await f.request(base+'/events','POST',draft,f.cookie)).status,201);
+    assert.equal((await f.request(base+'/session','PATCH',{confirm:true,secret:'b'.repeat(43)})).status,401);
+    assert.equal((await f.request(base+'/session','PATCH',{confirm:false,secret:'b'.repeat(43)},f.cookie)).status,400);
+    const cross=await f.mf.dispatchFetch('https://test.local'+base+'/session',{method:'PATCH',headers:{Origin:'https://evil.local','Content-Type':'application/json',Cookie:f.cookie},body:JSON.stringify({confirm:true,secret:'b'.repeat(43)})});
+    assert.equal(cross.status,403);
+    const response=await f.request(base+'/session','PATCH',{confirm:true,secret:'b'.repeat(43)},f.cookie);
+    assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+    const result=await response.json();assert.deepEqual(result.member,f.member);
+    const cookie=response.headers.get('set-cookie').split(';')[0];
+    assert.equal((await f.request(base+'/session','PATCH',{confirm:true,secret:'b'.repeat(43)},cookie)).status,200);
+    assert.equal((await f.request(base+'/session','POST',{secret:'a'.repeat(43)})).status,401);
+    assert.equal((await f.request(base+'/events/'+draft.id,'DELETE',{version:1},f.cookie)).status,401);
+    assert.equal((await f.request(base+'/session','POST',{secret:'b'.repeat(43)})).status,200);
+    assert.equal((await f.request(base+'/events/'+draft.id,'PATCH',{title:'still mine',startDate:draft.startDate,endDate:draft.endDate,version:1},cookie)).status,200);
+    const data=await(await f.request(base)).json();assert.equal(data.events[0].id,draft.id);assert.equal(data.events[0].memberId,f.member.id);
+  }finally{await f.mf.dispose();}
+});
+test('competing rotations have only one winner and never revive an old key',async()=>{
+  const f=await fixture();try {
+    const base=`/api/calendars/${f.cid}/session`;
+    const res=await Promise.all(['c','d'].map(s=>f.request(base,'PATCH',{confirm:true,secret:s.repeat(43)},f.cookie)));
+    assert.equal(res.filter(r=>r.status===200).length,1);
+    assert.ok(res.every(r=>[200,401,409].includes(r.status)));
+    const winner=await res.find(r=>r.status===200).json();
+    assert.equal((await f.request(base,'POST',{secret:winner.secret})).status,200);
+    assert.equal((await f.request(base,'POST',{secret:'a'.repeat(43)})).status,401);
+  }finally{await f.mf.dispose();}
+});
