@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import CalendarMonth from "./calendar-month";
 import { ArrowRight, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, LoaderCircle, LockKeyhole, Pencil, Plus, RefreshCw, Settings2, Trash2, Users, X } from "lucide-react";
 import type { CalendarData, CalendarEvent, Member } from "@/lib/calendar-types";
 
-const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
 const fmtMonth = new Intl.DateTimeFormat("ja-JP", { year: "numeric", month: "long", timeZone: "UTC" });
 const fmtDay = new Intl.DateTimeFormat("ja-JP", { month: "long", day: "numeric", weekday: "long", timeZone: "UTC" });
 const iso = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
@@ -158,9 +158,10 @@ export default function CalendarApp() {
       history.replaceState(null, "", `/?c=${encodeURIComponent(result.calendar.id)}`); setCid(result.calendar.id); setCreateName(""); await load(result.calendar.id);
     } catch (e) { setError(e instanceof Error ? e.message : "カレンダーを作成できませんでした。"); } finally { setBusy(false); }
   }
-  function startEvent(day = selected) {
+  function startEvent(day = selected, endDate = day) {
+    if (busy || loading) return;
     draftId.current = makeUuid();
-    setEditing(null); setDraft({ title: "", startDate: day, endDate: day });
+    setEditing(null); setDraft({ title: "", startDate: day, endDate });
     setPendingEvent(!data?.me); setModal(data?.me ? "event" : "join"); setName("");
   }
   function editEvent(event: CalendarEvent) { if (event.memberId !== data?.me?.id) return; setEditing(event); setDraft({ title: event.title, startDate: event.startDate, endDate: event.endDate }); setModal("event"); }
@@ -212,10 +213,7 @@ export default function CalendarApp() {
     <div className="page-wrap"><section className="calendar-heading"><div><p className="eyebrow">みんなのカレンダー</p><h1>{data?.calendar.name || "カレンダー"}</h1></div>{data?.me ? <button className="me-chip" onClick={() => setModal("settings")}><span className="avatar" style={{ background: data.me.color }}>{data.me.name.slice(0, 1)}</span><span>{data.me.name}</span><ChevronDown size={14}/></button> : <button className="join-button" onClick={() => { setPendingEvent(false); setModal("join"); }}><Users size={16}/> 参加する</button>}</section>
       {error && !modal && <div role="alert" className="error-banner">{error}<button onClick={() => setError("")}>閉じる</button></div>}
       <div className="workspace"><section className="calendar-card"><div className="month-toolbar"><div className="month-title"><h2>{month ? fmtMonth.format(fromIso(month)) : ""}</h2><span className="month-tag">共有カレンダー</span></div><div className="month-actions"><button className="today-button" onClick={() => { setMonth(today); setSelected(today); }}>今日</button><button className="icon-button nav-button" aria-label="前の月" onClick={() => setMonth(shiftMonth(month, -1))}><ChevronLeft size={18}/></button><button className="icon-button nav-button" aria-label="次の月" onClick={() => setMonth(shiftMonth(month, 1))}><ChevronRight size={18}/></button></div></div>
-        <div className="calendar-grid" role="grid" aria-label={`${month ? fmtMonth.format(fromIso(month)) : ""}のカレンダー`}>
-          {weekdays.map((w, i) => <div key={w} role="columnheader" className={`weekday ${i === 0 ? "sunday" : i === 6 ? "saturday" : ""}`}>{w}</div>)}
-          {days.map((day) => { const d = fromIso(day); const currentMonth = day.slice(0, 7) === month.slice(0, 7); const events = visibleEvents.filter((e) => isBetween(day, e.startDate, e.endDate)); const isSelected = day === selected; return <button key={day} role="gridcell" aria-selected={isSelected} aria-label={`${fmtDay.format(d)}${events.length ? `、予定${events.length}件` : ""}`} className={`day-cell ${currentMonth ? "" : "outside"} ${day === today ? "is-today" : ""} ${isSelected ? "selected" : ""} ${d.getUTCDay() === 0 ? "sunday" : d.getUTCDay() === 6 ? "saturday" : ""}`} onClick={() => setSelected(day)}><span className="day-number">{d.getUTCDate()}</span><span className="day-markers">{events.length < 3 ? events.map((ev) => <span key={ev.id} className="event-mark" style={{ background: data?.members.find((m) => m.id === ev.memberId)?.color || "#bd6749" }}/> ) : <><span className="event-mark" style={{ background: data?.members.find((m) => m.id === events[0].memberId)?.color || "#bd6749" }}/><span className="event-mark" style={{ background: data?.members.find((m) => m.id === events[1].memberId)?.color || "#bd6749" }}/></>}</span><span className="event-count">{events.length > 2 ? `+${events.length - 2}` : ""}</span><span className="cell-events">{events.slice(0, 2).map((ev) => <span className="cell-event" key={ev.id} style={{ "--member-color": data?.members.find((m) => m.id === ev.memberId)?.color || "#bd6749" } as React.CSSProperties}>{ev.title}</span>)}</span></button>; })}
-        </div><div className="calendar-foot"><span><span className="today-legend"/> 今日</span><span>日付を選ぶと予定が表示されます</span></div></section>
+        <CalendarMonth days={days} month={month} today={today} selected={selected} events={visibleEvents} members={data?.members || []} disabled={busy || loading} onSelect={setSelected} onCreate={startEvent}/><div className="calendar-foot"><span><span className="today-legend"/> 今日</span><span>ドラッグで期間選択・ダブルクリックで予定追加</span></div></section>
         <aside className="agenda-card"><div className="agenda-head"><div><p className="eyebrow">DAY AGENDA</p><h2>{selected ? fmtDay.format(fromIso(selected)) : ""}</h2></div><button className="add-button" onClick={() => startEvent()} aria-label="予定を追加"><Plus size={18}/></button></div>
           {loading ? <div className="agenda-state"><LoaderCircle className="spin" size={21}/><span>読み込み中…</span></div> : agenda.length ? <div className="agenda-list">{agenda.map((event) => { const member = data?.members.find((m) => m.id === event.memberId); const owned = event.memberId === data?.me?.id; return <article key={event.id} className="agenda-event" style={{ "--member-color": member?.color || "#bd6749" } as React.CSSProperties}><span className="agenda-event-bar"/><div className="agenda-event-body"><h3>{event.title}</h3><p><span className="member-dot" style={{ background: member?.color }}/>{member?.name || "メンバー"}<span className="date-range">{event.startDate === event.endDate ? "" : `${event.startDate.slice(5).replace("-", "/")} – ${event.endDate.slice(5).replace("-", "/")}`}</span></p></div>{owned && <button className="edit-button" aria-label={`${event.title}を編集`} onClick={() => editEvent(event)}><Pencil size={15}/></button>}</article>; })}</div> : <div className="agenda-empty"><div className="empty-icon"><CalendarDays size={20}/></div><h3>予定はありません</h3><p>この日に決まっている予定は<br/>まだ登録されていません。</p></div>}
           <button className="agenda-add" onClick={() => startEvent()}><Plus size={16}/> この日に予定を追加</button>
