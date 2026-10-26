@@ -1,7 +1,7 @@
 {
   "version": 1,
   "accountId": "63913da2f930251ebbbf2dcb940b90dc",
-  "workerName": "uchiwa-calendar-29d2029c2f86c141788cdeab",
+  "workerName": "uchiwa-calendar",
   "databaseId": "11ed3a5c-b995-41da-a7e4-6e266b57619a",
   "databaseName": "uchiwa-calendar-b812d1",
   "migrations": [
