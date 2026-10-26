@@ -38,9 +38,26 @@ node scripts/cloudflare-update.mjs
 
 同じWorker名と同じD1を指定して、ビルド・公開します。予定データの取り込み直し、新しいD1の作成、既存のD1の削除は行いません。`deploy-cloudflare.sh`は初回移行用なので、通常更新には使いません。
 
-別端末でGitHubから取得した場合も、依存関係を導入し、Wranglerにログインすれば同じ本番設定を使えます。GitHubへpushしただけで自動公開する設定は含めていません。
+別端末でGitHubから取得した場合も、依存関係を導入し、Wranglerにログインすれば同じ本番設定を使えます。自動公開の設定は、以下の「GitHub Actionsによる自動更新」を参照してください。
 
 `drizzle/`のSQLが適用済みの状態と変わった場合は、安全のため公開を停止します。データベースの形式変更は、既存データを保持する移行手順を確認してから進めてください。公開を通すために照合情報だけを書き換えないでください。
+
+## GitHub Actionsによる自動更新
+
+`.github/workflows/cloudflare.yml`で、PRとmasterへのpush時に単体テスト、一時D1を使ったAPIテスト、ビルド、本番設定の照合を実行します。成功したmasterだけをCloudflareへ公開します。Actionsタブからの手動実行にも対応しています。
+
+初回のみ次の設定が必要です。
+
+1. URL短縮を完了し、`cloudflare.production.json`の`workerName`が`uchiwa-calendar`になった状態をmasterへpushします。途中で停止している場合は、`node scripts/cloudflare-rename.mjs --commit`を再実行して完了します。
+2. [CloudflareのAPI Tokens](https://dash.cloudflare.com/profile/api-tokens)で、公式手順の「Edit Cloudflare Workers」を使い、対象アカウントに限定したAPIトークンを作成します。
+3. [GitHubのActions secrets](https://github.com/Twil3akine/uchiwa-calendar/settings/secrets/actions)に、名前`CLOUDFLARE_API_TOKEN`でトークンを登録します。トークンをソースやチャットに貼る必要はありません。
+4. [Actions](https://github.com/Twil3akine/uchiwa-calendar/actions)で「CI and Cloudflare deploy」を選び、masterに対して「Run workflow」を実行します。以後はmasterへのpushで自動更新します。
+
+初期設定が済んでいない場合は、検証だけを実行し、公開を待機した理由をActionsのSummaryに表示します。PRでは本番公開を実行しません。APIトークンは検証・ビルド工程へ渡しません。
+
+本番公開では既存のWorkerとD1を指定する生成済み設定だけを使います。データの再取り込みやSQLの自動適用は行わず、SQLの照合に失敗した場合は停止します。同じブランチの実行を直列化し、公開途中の処理を新しいpushでキャンセルしません。
+
+参考: [Cloudflare公式のGitHub Actions設定](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
 
 ## 公開URLを短くする
 

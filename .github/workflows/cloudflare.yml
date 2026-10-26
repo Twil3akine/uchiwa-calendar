@@ -1,0 +1,78 @@
+name: CI and Cloudflare deploy
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+
+      - name: Set up pinned pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          run_install: false
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run unit tests
+        run: node --test tests/*.test.mjs
+
+      - name: Check calendar API with a temporary database
+        run: node tests/run-isolated.mjs
+
+      - name: Build and validate production configuration
+        run: |
+          node scripts/run-framework.mjs build
+          node scripts/cloudflare-update.mjs --prepare-only
+
+      - name: Check deployment setup
+        id: deployment
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          const settings = JSON.parse(readFileSync("cloudflare.production.json", "utf8"));
+          const reasons = [];
+          if (!process.env.CLOUDFLARE_API_TOKEN?.trim()) reasons.push("Repository secret CLOUDFLARE_API_TOKEN is not configured.");
+          if (settings.workerName !== "uchiwa-calendar") reasons.push("Complete the URL rename and push cloudflare.production.json before enabling deployment.");
+          const enabled = reasons.length === 0;
+          appendFileSync(process.env.GITHUB_OUTPUT, `enabled=${enabled}\n`);
+          if (!enabled) {
+            console.log("::notice::Checks passed; deployment is waiting for setup.");
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Deployment waiting for setup\n\n${reasons.map(reason => "- " + reason).join("\n")}\n`);
+          }
+          NODE
+
+      - name: Deploy the checked build to Cloudflare
+        if: steps.deployment.outputs.enabled == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node node_modules/wrangler/bin/wrangler.js deploy --config dist/server/cloudflare.json
