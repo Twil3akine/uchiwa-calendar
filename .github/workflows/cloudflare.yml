@@ -40,6 +40,9 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit locked dependencies
+        run: pnpm audit --audit-level=low
+
       - name: Run unit tests
         run: node --test tests/*.test.mjs
 

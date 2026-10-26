@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const wranglerRequire = createRequire(import.meta.resolve('wrangler/package.json'));
-const { Miniflare } = wranglerRequire('miniflare');
+const { Miniflare, convertV4MiniflareOptions } = wranglerRequire('miniflare');
 const esbuild = wranglerRequire('esbuild');
 
 const workerEntry = fileURLToPath(new URL('./api-worker.ts', import.meta.url));
@@ -21,13 +21,13 @@ const bundle = await esbuild.build({
   write: false,
 });
 
-const miniflare = new Miniflare({
+const miniflare = new Miniflare(convertV4MiniflareOptions({
   modules: true,
   script: bundle.outputFiles[0].text,
   compatibilityDate: '2026-05-15',
   compatibilityFlags: ['nodejs_compat'],
   d1Databases: ['DB'],
-});
+}));
 
 const originalFetch = globalThis.fetch;
 const originalTestUrl = process.env.CALENDAR_TEST_URL;

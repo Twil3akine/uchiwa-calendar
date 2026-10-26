@@ -1,6 +1,27 @@
 # Copied Sites are standalone projects and cannot inherit the monorepo policy.
 minimumReleaseAge: 10080
 minimumReleaseAgeIgnoreMissingTime: false
+# Reviewed security/toolchain update; exceptions are limited to exact pinned versions.
+minimumReleaseAgeExclude:
+  - next@16.4.3
+  - eslint-config-next@16.4.3
+  - '@next/env@16.4.3'
+  - '@next/eslint-plugin-next@16.4.3'
+  - '@next/swc-darwin-arm64@16.4.3'
+  - '@next/swc-darwin-x64@16.4.3'
+  - '@next/swc-linux-arm64-gnu@16.4.3'
+  - '@next/swc-linux-arm64-musl@16.4.3'
+  - '@next/swc-linux-x64-gnu@16.4.3'
+  - '@next/swc-linux-x64-musl@16.4.3'
+  - '@next/swc-win32-arm64-msvc@16.4.3'
+  - '@next/swc-win32-x64-msvc@16.4.3'
+  - '@cloudflare/vite-plugin@1.65.0'
+  - '@vinext/types@1.0.2'
+  - miniflare@5.20261019.2-beta
+  - vinext@1.3.1
+  - vite@8.3.5
+  - wrangler@4.152.0
+  - fast-uri@3.1.9
 trustLockfile: false
 strictDepBuilds: true
 allowBuilds:
@@ -18,4 +39,16 @@ packageImportMethod: auto
 verifyDepsBeforeRun: false
 optimisticRepeatInstall: false
 overrides:
-  miniflare>sharp: 0.35.4
+  sharp: 0.35.5
+  esbuild: 0.28.1
+  js-yaml: 4.3.2
+  '@babel/core': 7.29.6
+  'brace-expansion@<2': 1.1.21
+  'brace-expansion@>=5 <6': 5.0.12
+  browserslist: 4.28.7
+  fflate: 0.7.5
+  baseline-browser-mapping: 2.11.0
+  fast-uri: 3.1.9
+  source-map-js: 1.2.2
+  undici: 7.30.1
+  zod: 4.6.6

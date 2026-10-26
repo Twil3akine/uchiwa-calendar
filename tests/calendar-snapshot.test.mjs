@@ -164,14 +164,14 @@ test('CLI writes a migration and metadata sidecar without printing snapshot valu
 
 test('generated migration round-trips exact rows into ephemeral Miniflare D1 and retains slot sequence', async () => {
   const wranglerRequire = createRequire(import.meta.resolve('wrangler/package.json'));
-  const { Miniflare } = wranglerRequire('miniflare');
-  const miniflare = new Miniflare({
+  const { Miniflare, convertV4MiniflareOptions } = wranglerRequire('miniflare');
+  const miniflare = new Miniflare(convertV4MiniflareOptions({
     modules: true,
     script: 'export default { async fetch() { return new Response("ok"); } };',
     compatibilityDate: '2026-05-15',
     compatibilityFlags: ['nodejs_compat'],
     d1Databases: ['DB'],
-  });
+  }));
   try {
     const snapshot = fixture();
     const { sql } = transformSnapshot(snapshot);
