@@ -42,8 +42,9 @@ function absorbCookies(response, targetJar) {
   }
 }
 
-async function request(method, path, { body, cookies, expectedStatus, originHeader = origin } = {}) {
+async function request(method, path, { body, rawBody, headers: extraHeaders, cookies, expectedStatus, originHeader = origin } = {}) {
   const headers = { 'Content-Type': 'application/json' };
+  Object.assign(headers, extraHeaders || {});
   if (originHeader !== null) headers.Origin = originHeader;
   if (cookies?.cookies.size) {
     headers.Cookie = [...cookies.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
@@ -52,7 +53,7 @@ async function request(method, path, { body, cookies, expectedStatus, originHead
   const response = await fetch(new URL(`${prefix}${path}`, base.origin), {
     method,
     headers,
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(rawBody !== undefined ? { body: rawBody } : body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   absorbCookies(response, cookies);
   const raw = await response.text();
@@ -152,6 +153,36 @@ async function main() {
   noSecretMaterial(restoredRead.data, [secretA]);
   passed('restores the same member identity, color, and rights from its secret');
 
+  const mcpPath = `/api/calendars/${encodeURIComponent(calendarA.id)}/mcp`;
+  const mcp = (body, options = {}) => request('POST', mcpPath, {
+    body, headers: { Authorization: `Bearer ${secretA}`, ...(options.headers || {}) },
+    ...(options.originHeader === undefined ? {} : { originHeader: options.originHeader }),
+  });
+  const mcpInit = await mcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'isolated-test', version: '1' } } }, { headers: { 'MCP-Protocol-Version': '2025-11-25' } });
+  assert.equal(mcpInit.status, 200);
+  assert.equal(mcpInit.data.result.protocolVersion, '2025-11-25');
+  assert.ok(mcpInit.data.result.capabilities.tools);
+  assert.equal((await mcp({ jsonrpc: '2.0', id: 14, method: 'tools/list' }, { originHeader: null })).status, 200);
+  assert.equal((await mcp({ jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+  const mcpTools = await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.deepEqual(mcpTools.data.result.tools.map((tool) => tool.name), ['list_events', 'add_event', 'delete_event']);
+  assert.equal((await request('GET', mcpPath)).status, 405);
+  assert.equal((await mcp({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, { headers: { 'MCP-Protocol-Version': 'unsupported' } })).status, 400);
+  assert.equal((await mcp(null, { headers: {}, originHeader: 'https://wrong-origin.invalid' })).status, 403);
+  const malformedRpc = await request('POST', mcpPath, { rawBody: '{', headers: { Authorization: `Bearer ${secretA}` } });
+  assert.equal(malformedRpc.data.error.code, -32700);
+  const batchRpc = await mcp([{ jsonrpc: '2.0', id: 4, method: 'tools/list' }]);
+  assert.equal(batchRpc.data.error.code, -32600);
+  const unknownRpc = await mcp({ jsonrpc: '2.0', id: 5, method: 'unknown/method' });
+  assert.equal(unknownRpc.data.error.code, -32601);
+  const cookieOnlyMcp = await request('POST', mcpPath, { body: { jsonrpc: '2.0', id: 6, method: 'tools/list' }, cookies: restoredJarA });
+  assert.equal(cookieOnlyMcp.status, 401);
+  const wrongBearerMcp = await request('POST', mcpPath, { body: { jsonrpc: '2.0', id: 7, method: 'tools/list' }, headers: { Authorization: `Bearer ${secretB}` } });
+  assert.equal(wrongBearerMcp.status, 401);
+  noSecretMaterial(mcpInit.data, [secretA]);
+  noSecretMaterial(mcpTools.data, [secretA]);
+  passed('enforces MCP initialization, notifications, tools, protocol errors, origin and Bearer-only authentication');
+
   const initialEvent = {
     id: eventId(), title: 'multi-day literal', startDate: '2026-04-10', endDate: '2026-04-12',
   };
@@ -166,6 +197,33 @@ async function main() {
   assert.equal(event.endDate, initialEvent.endDate);
   assert.equal(event.version, 1);
   assert.equal(event.title, initialEvent.title);
+
+  const mcpList = await mcp({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'list_events', arguments: { from: '2026-04-11', to: '2026-04-11' } } });
+  const mcpListedEvents = mcpList.data.result.structuredContent.events;
+  const mcpListedEvent = mcpListedEvents.find((item) => item.id === event.id);
+  assert.equal(mcpListedEvent.version, 1);
+  assert.equal((await mcp({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'list_events', arguments: { from: '2026-04-13', to: '2026-04-14' } } })).data.result.structuredContent.events.some((item) => item.id === event.id), false);
+  const mcpEventBody = { eventId: eventId(), title: 'MCP retry', startDate: '2026-04-20', endDate: '2026-04-21' };
+  const mcpAddRequest = { jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'add_event', arguments: mcpEventBody } };
+  const mcpAddPair = await Promise.all([mcp(mcpAddRequest), mcp(mcpAddRequest)]);
+  assert.ok(mcpAddPair.every((item) => !item.data.result.isError));
+  assert.equal(mcpAddPair[0].data.result.structuredContent.event.id, mcpEventBody.eventId);
+  const mcpAdded = mcpAddPair[0].data.result.structuredContent.event;
+  const mcpDeleteStale = await mcp({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'delete_event', arguments: { eventId: mcpAdded.id, version: 2 } } });
+  assert.equal(mcpDeleteStale.data.result.isError, true);
+  const mcpDelete = await mcp({ jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'delete_event', arguments: { eventId: mcpAdded.id, version: 1 } } });
+  assert.deepEqual(mcpDelete.data.result.structuredContent, { ok: true });
+  passed('lists overlapping MCP events with versions, idempotently registers concurrent retries, and rejects stale deletion versions');
+
+  const rotatedSecret = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const rotated = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/session`, {
+    body: { confirm: true, secret: rotatedSecret }, cookies: restoredJarA, expectedStatus: 200,
+  });
+  assert.equal(rotated.data.member.id, memberA.id);
+  assert.equal(rotated.data.secret, rotatedSecret, 'the rotation response returns the new secret to the authenticated member by design');
+  const revokedBearer = await request('POST', mcpPath, { body: { jsonrpc: '2.0', id: 13, method: 'tools/list' }, headers: { Authorization: `Bearer ${secretA}` } });
+  assert.equal(revokedBearer.status, 401);
+  passed('revokes the old MCP Bearer when the participant secret is rotated');
 
   const joinC = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/members`, {
     body: { name: 'Same name', secret: secretC }, cookies: jarC,

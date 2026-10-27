@@ -17,6 +17,21 @@
 - HTMLに見える予定名を文字列として扱うこと
 - 検証用予定の削除
 
+MCPの隔離API検証は、初期化・通知・tools/list・tools/call、バージョンヘッダー、GET拒否、JSON-RPCエラー、Bearer/Origin認証、期間フィルターと版番号、登録の冪等性、版競合を対象に追加しています。
+
+## MCPビルド後の接続確認
+
+VinextがMCPルートをWorkerへ含めたことは、隔離検証だけでは判定できません。`pnpm run build`後にローカルWorkerを起動し、実在する検証用カレンダーと参加者の秘密情報で初期化リクエストを送ります。HTTP 200とJSON-RPCの`initialize`応答が返ることを確認します。Workerは`pnpm start`で起動できます。
+
+```sh
+curl -i http://127.0.0.1:8787/api/calendars/<calendarId>/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <participant-secret>' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"verification","version":"1"}}}'
+```
+
+実際の秘密情報をシェル履歴や共有ログに残さないでください。期待する応答には`protocolVersion`、`serverInfo`、`capabilities.tools`が含まれます。
+
 型検査は`node node_modules/typescript/bin/tsc --noEmit`、本番ビルドはSitesのビルド手順で実行します。
 
 ## ブラウザー

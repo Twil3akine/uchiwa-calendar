@@ -3,6 +3,7 @@ import { GET as getCalendar } from "../app/api/calendars/[calendarId]/route";
 import { POST as joinCalendar } from "../app/api/calendars/[calendarId]/members/route";
 import { POST as createSession, PATCH as rotateSession } from "../app/api/calendars/[calendarId]/session/route";
 import { POST as createEvent } from "../app/api/calendars/[calendarId]/events/route";
+import { GET as getMcp, POST as postMcp } from "../app/api/calendars/[calendarId]/mcp/route";
 import {
   DELETE as deleteEvent,
   PATCH as updateEvent,
@@ -19,6 +20,8 @@ function route(method: string, pathname: string) {
   if (sessionMatch && method === "PATCH") return { handler: rotateSession, params: { calendarId: decodeURIComponent(sessionMatch[1]) } };
   const eventsMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/events$/);
   if (eventsMatch && method === "POST") return { handler: createEvent, params: { calendarId: decodeURIComponent(eventsMatch[1]) } };
+  const mcpMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/mcp$/);
+  if (mcpMatch && (method === "POST" || method === "GET")) return { handler: method === "POST" ? postMcp : getMcp, params: { calendarId: decodeURIComponent(mcpMatch[1]) } };
   const eventMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/events\/([^/]+)$/);
   if (eventMatch && (method === "PATCH" || method === "DELETE")) {
     return {
