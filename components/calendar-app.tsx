@@ -156,11 +156,19 @@ export default function CalendarApp() {
   }, [getToday, load]);
 
   useEffect(() => {
-    if (!cid || !data) return;
-    const refresh = () => { if (document.visibilityState === "visible") void load(cid); };
-    window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
-    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
-  }, [cid, data, load]);
+    if (!cid || !month || modal) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [role="textbox"]'))) return;
+      const direction = event.key === "<" || event.key === "," ? -1 : event.key === ">" || event.key === "." ? 1 : 0;
+      if (!direction) return;
+      event.preventDefault();
+      setMonth(current => shiftMonth(current, direction));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [cid, month, modal]);
 
   useEffect(() => {
     if (!modal) return;
