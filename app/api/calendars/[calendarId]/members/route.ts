@@ -1,12 +1,12 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
-import { calendars } from "../../../../../db/schema";
+import { calendars, members } from "../../../../../db/schema";
 import { LIMITS, rateLimit } from "../../../../../lib/server/security";
-import { findMemberBySecret, hashSecret, validateSecret } from "../../../../../lib/server/auth";
+import { findMemberBySecret, hashSecret, requireMember, validateSecret } from "../../../../../lib/server/auth";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, requiredString, sessionCookie } from "../../../../../lib/server/http";
+import { MEMBER_COLORS } from "../../../../../lib/member-colors";
 
 type Context = { params: Promise<{ calendarId: string }> };
-const palette = ["#2563eb", "#db2777", "#059669", "#d97706", "#7c3aed", "#0891b2", "#dc2626", "#4f46e5"];
 
 export async function POST(request: Request, { params }: Context) {
   try {
@@ -28,7 +28,7 @@ export async function POST(request: Request, { params }: Context) {
       return json({ member: existing }, 200, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
     }
     const id = crypto.randomUUID();
-    const colorCase = sql`CASE ((SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) % ${palette.length}) ${sql.join(palette.map((color, index) => sql`WHEN ${index} THEN ${color}`), sql` `)} END`;
+    const colorCase = sql`CASE ((SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) % ${MEMBER_COLORS.length}) ${sql.join(MEMBER_COLORS.map((color, index) => sql`WHEN ${index} THEN ${color}`), sql` `)} END`;
     try {
       await db.run(sql`INSERT INTO members (member_id, calendar_id, name, color, secret_hash) SELECT ${id}, ${calendarId}, ${name}, ${colorCase}, ${secretHash} WHERE (SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) < ${LIMITS.members}`);
     } catch (error) {
@@ -41,6 +41,29 @@ export async function POST(request: Request, { params }: Context) {
     const member = await findMemberBySecret(calendarId, secret);
     if (!member) throw new HttpError(409, `参加者は${LIMITS.members}人までです。`);
     return json({ member }, 201, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
+  } catch (error) {
+    return fail(error);
+  }
+}
+
+export async function PATCH(request: Request, { params }: Context) {
+  try {
+    requireSameOrigin(request);
+    await rateLimit(request, "write");
+    const { calendarId } = await params;
+    requireCalendarId(calendarId);
+    const member = await requireMember(request, calendarId);
+    const body = await readJson(request, 4096);
+    requireKeys(body, ["color"]);
+    if (typeof body.color !== "string" || !MEMBER_COLORS.includes(body.color as (typeof MEMBER_COLORS)[number])) {
+      throw new HttpError(400, "色を選び直してください。");
+    }
+    const [updated] = await getDb().update(members)
+      .set({ color: body.color })
+      .where(and(eq(members.id, member.id), eq(members.calendarId, calendarId)))
+      .returning({ id: members.id, name: members.name, color: members.color });
+    if (!updated) throw new HttpError(401, "参加者のセッションが無効です。");
+    return json({ member: updated });
   } catch (error) {
     return fail(error);
   }
