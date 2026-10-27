@@ -42,8 +42,8 @@ function absorbCookies(response, targetJar) {
   }
 }
 
-async function request(method, path, { body, cookies, expectedStatus, originHeader = origin } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
+async function request(method, path, { body, cookies, expectedStatus, originHeader = origin, ip = '203.0.113.1' } = {}) {
+  const headers = { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip };
   if (originHeader !== null) headers.Origin = originHeader;
   if (cookies?.cookies.size) {
     headers.Cookie = [...cookies.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
@@ -223,6 +223,62 @@ async function main() {
   assert.equal(unchangedAfterOtherMember.title, initialEvent.title);
   assert.equal(unchangedAfterOtherMember.version, event.version);
   passed('keeps same-calendar member events private by member ID');
+
+  const palette = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#4f46e5'];
+  const membersPath = `/api/calendars/${encodeURIComponent(calendarA.id)}/members`;
+  const colorRequest = (method, path, options = {}) => request(method, path, { ...options, ip: '203.0.113.4' });
+  let selectedColor = memberA.color;
+  for (const color of palette) {
+    const changed = await colorRequest('PATCH', membersPath, { body: { color }, cookies: restoredJarA, expectedStatus: 200 });
+    assert.deepEqual(changed.data.member, { id: memberA.id, name: memberA.name, color });
+    const colorRead = await colorRequest('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 });
+    assert.equal(colorRead.data.me.color, color);
+    assert.equal(colorRead.data.members.find((member) => member.id === memberA.id).color, color);
+    selectedColor = color;
+  }
+  const persistedColor = await colorRequest('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(persistedColor.data.me.color, selectedColor);
+  assert.equal(persistedColor.data.members.find((member) => member.id === memberA.id).color, selectedColor);
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: selectedColor }, cookies: restoredJarA })).status, 200, 'resending the current color should succeed');
+
+  const invalidColorBodies = [
+    undefined, null, { color: null }, { color: 7 }, { color: '#ffffff' }, { color: palette[0], memberId: memberC.id },
+  ];
+  for (const body of invalidColorBodies) {
+    assert.equal((await colorRequest('PATCH', membersPath, { body, cookies: restoredJarA })).status, 400);
+  }
+  const afterInvalidColors = await colorRequest('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(afterInvalidColors.data.me.color, selectedColor, 'rejected payloads must not change the member color');
+  assert.equal(afterInvalidColors.data.members.find((member) => member.id === memberA.id).color, selectedColor);
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] } })).status, 401, 'cookie-less color changes must be rejected');
+  const invalidCookieJar = jar(); invalidCookieJar.cookies.set(`calendar_session_${calendarA.id}`, 'invalid-session');
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] }, cookies: invalidCookieJar })).status, 401);
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] }, cookies: jarB })).status, 401, 'another calendar session must not authenticate here');
+  const crossCalendarSecretJar = jar(); crossCalendarSecretJar.cookies.set(`calendar_session_${calendarA.id}`, secretB);
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] }, cookies: crossCalendarSecretJar })).status, 401, 'another calendar secret under this calendar cookie name must not authenticate');
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] }, cookies: restoredJarA, originHeader: 'https://wrong-origin.invalid' })).status, 403);
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[0] }, cookies: restoredJarA, originHeader: null })).status, 403);
+
+  const memberDSecret = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const memberDJar = jar();
+  const memberDJoin = await colorRequest('POST', membersPath, { body: { name: 'Member D', secret: memberDSecret }, cookies: memberDJar });
+  ok(memberDJoin, 'join as member D');
+  const memberD = memberDJoin.data.member;
+  assert.equal((await colorRequest('PATCH', membersPath, { body: { color: palette[1] }, cookies: memberDJar })).status, 200);
+  const afterMemberD = await colorRequest('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(afterMemberD.data.members.find((member) => member.id === memberA.id).color, selectedColor, 'member D must not change member A color');
+  assert.equal(afterMemberD.data.members.find((member) => member.id === memberD.id).color, palette[1]);
+  const memberESecret = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const memberE = await colorRequest('POST', membersPath, { body: { name: 'Member E', secret: memberESecret }, cookies: jar() });
+  ok(memberE, 'join as member E');
+  assert.equal(memberE.data.member.color, palette[3], 'manual color changes must not affect count based automatic assignment (E is the 4th member of calendar A: A, C, D, E)');
+
+  const colorRestoreJar = jar();
+  assert.equal((await colorRequest('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/session`, { body: { secret: secretA }, cookies: colorRestoreJar })).status, 200);
+  const colorRestored = await colorRequest('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: colorRestoreJar, expectedStatus: 200 });
+  assert.equal(colorRestored.data.me.color, selectedColor);
+  passed('changes only the authenticated member color, persists all palette values, and rejects invalid or cross-session changes');
+
   const duplicate = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, {
     body: initialEvent, cookies: restoredJarA,
   });
@@ -350,6 +406,15 @@ async function main() {
   assert.match(feedB.body, /SUMMARY:B calendar only/);
   assert.doesNotMatch(feedB.body, new RegExp(`UID:${event.id}@uchiwa-calendar`));
   passed('cleans up all test events');
+
+  const rotatedSecret = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const rotated = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/session`, {
+    body: { confirm: true, secret: rotatedSecret }, cookies: restoredJarA, expectedStatus: 200,
+  });
+  assert.equal(rotated.data.member.color, selectedColor);
+  const afterColorRotation = await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(afterColorRotation.data.me.color, selectedColor);
+  passed('preserves the selected color when the personal link is reissued');
 
   console.log(`\n${checks.length} integration checks passed against ${origin}`);
 }
