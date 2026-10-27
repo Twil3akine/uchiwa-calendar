@@ -9,10 +9,11 @@ const migrationSource = await readFile(new URL('../drizzle/0000_lean_omega_red.s
 const schemaStatements = migrationSource
   .split(/-->\s*statement-breakpoint/g)
   .map((statement) => statement.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .map((statement) => statement.includes('CREATE TABLE `calendars`') ? statement.replace('`name` text NOT NULL,', '`name` text NOT NULL,\n\t`view_key_hash` text,') : statement);
 
 const expectedKeys = {
-  calendars: ['id', 'name', 'created_at'],
+  calendars: ['id', 'name', 'view_key_hash', 'created_at'],
   members: ['slot', 'member_id', 'calendar_id', 'name', 'color', 'secret_hash', 'created_at'],
   calendar_events: ['id', 'calendar_id', 'member_id', 'title', 'start_date', 'end_date', 'version', 'created_at', 'updated_at'],
 };
@@ -26,7 +27,7 @@ function assertSnapshot(condition, message) {
 
 function exactRow(row, table, index) {
   assertSnapshot(row && typeof row === 'object' && !Array.isArray(row), `${table}[${index}] must be an object`);
-  const expected = expectedKeys[table];
+  const expected = table === 'calendars' && !Object.hasOwn(row, 'view_key_hash') ? ['id', 'name', 'created_at'] : expectedKeys[table];
   const actual = Object.keys(row).sort();
   const wanted = [...expected].sort();
   assertSnapshot(actual.length === wanted.length && actual.every((key, i) => key === wanted[i]), `${table}[${index}] has missing or unexpected columns`);
@@ -67,6 +68,7 @@ function validInteger(value, label) {
 
 function sqlText(value) {
   // All identifiers are fixed constants; values are encoded as SQL string literals.
+  if (value === null) return 'NULL';
   return `'${value.replaceAll("'", "''")}'`;
 }
 
@@ -86,9 +88,12 @@ export function transformSnapshot(snapshot) {
 
   const calendars = snapshot.calendars.map((row, index) => {
     exactRow(row, 'calendars', index);
+    const viewKeyHash = row.view_key_hash ?? null;
+    assertSnapshot(viewKeyHash === null || (typeof viewKeyHash === 'string' && /^[0-9a-f]{64}$/i.test(viewKeyHash)), `calendars[${index}].view_key_hash must be NULL or a full SHA-256 hex digest`);
     return {
       id: validUuid(row.id, `calendars[${index}].id`),
       name: requiredText(row.name, `calendars[${index}].name`),
+      view_key_hash: viewKeyHash,
       created_at: validTimestamp(row.created_at, `calendars[${index}].created_at`),
     };
   });
@@ -154,7 +159,7 @@ export function transformSnapshot(snapshot) {
   events.sort((a, b) => a.id.localeCompare(b.id));
 
   const statements = [...schemaStatements];
-  for (const row of calendars) statements.push(rowInsert('calendars', ['id', 'name', 'created_at'], [row.id, row.name, row.created_at]));
+  for (const row of calendars) statements.push(rowInsert('calendars', ['id', 'name', 'view_key_hash', 'created_at'], [row.id, row.name, row.view_key_hash, row.created_at]));
   for (const row of members) statements.push(rowInsert('members', ['slot', 'member_id', 'calendar_id', 'name', 'color', 'secret_hash', 'created_at'], [row.slot, row.member_id, row.calendar_id, row.name, row.color, row.secret_hash, row.created_at]));
   for (const row of events) statements.push(rowInsert('calendar_events', ['id', 'calendar_id', 'member_id', 'title', 'start_date', 'end_date', 'version', 'created_at', 'updated_at'], [row.id, row.calendar_id, row.member_id, row.title, row.start_date, row.end_date, row.version, row.created_at, row.updated_at]));
 

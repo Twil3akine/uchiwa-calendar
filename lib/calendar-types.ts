@@ -1,4 +1,4 @@
-export type CalendarInfo = { id: string; name: string };
+export type CalendarInfo = { id: string; name: string; viewKeyRequired: boolean };
 export type Member = { id: string; name: string; color: string };
 import type { RecurrenceRule } from "./recurrence.mjs";
 export type CalendarEvent = { id: string; seriesId?: string; seriesStartDate?: string; memberId: string; title: string; startDate: string; endDate: string; version: number; recurrence?: RecurrenceRule | null };

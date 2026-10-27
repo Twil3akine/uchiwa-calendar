@@ -80,6 +80,18 @@ test('transforms a valid snapshot deterministically and reports only counts and 
   assert.ok(!JSON.stringify(first.metadata).includes('a'.repeat(64)));
 });
 
+test('preserves view key hashes and imports the legacy calendar row shape as NULL', () => {
+  const snapshot = fixture();
+  const hash = 'd'.repeat(64);
+  snapshot.calendars[0].view_key_hash = hash;
+  const { sql } = transformSnapshot(snapshot);
+  assert.match(sql, new RegExp(`VALUES \\('${calendarOne}', 'Owner''s 日本語 calendar', '${hash}',`));
+  assert.match(sql, new RegExp(`VALUES \\('${calendarTwo}', 'Second calendar', NULL,`));
+  const invalid = fixture();
+  invalid.calendars[0].view_key_hash = 'short';
+  assert.throws(() => transformSnapshot(invalid), /view_key_hash.*SHA-256/);
+});
+
 test('rejects missing or unexpected columns and malformed or truncated values', () => {
   const missingColumn = fixture();
   delete missingColumn.members[0].secret_hash;

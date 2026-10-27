@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "77d7ab0c-d747-4732-b539-cd1a1c2761a1",
+  "id": "2611446c-8957-42a6-bf89-9561b51a2859",
   "prevId": "3f4bb518-20ab-4192-93d0-cdfd85c511bb",
   "tables": {
     "calendar_events": {
@@ -47,27 +47,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "repeat_freq": {
-          "name": "repeat_freq",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "repeat_until": {
-          "name": "repeat_until",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "repeat_count": {
-          "name": "repeat_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "version": {
@@ -151,6 +130,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "view_key_hash": {
+          "name": "view_key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {

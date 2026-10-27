@@ -157,6 +157,15 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .settings-member div { display: grid; gap: 3px; }
 .settings-member strong { font-size: 11px; }
 .settings-member small { color: #9b978e; font-size: 9px; }
+.member-color-settings { margin-top: 16px; padding-top: 14px; border-top: 1px solid #efebe5; }
+.member-color-settings h3 { margin: 0 0 5px; color: #56544d; font-size: 11px; }
+.member-color-settings > p { display: flex; align-items: center; gap: 5px; margin: 0 0 10px; color: #858279; font-size: 10px; }
+.current-color-dot, .member-color-swatch { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto; border-radius: 50%; background: var(--choice-color); }
+.member-color-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.member-color-option { display: flex; align-items: center; justify-content: flex-start; gap: 5px; min-width: 0; padding: 7px 6px; border: 1px solid #e7e2da; border-radius: 8px; background: white; color: #706d65; font-size: 9px; }
+.member-color-option[aria-pressed="true"] { border-color: var(--choice-color); color: #45423c; background: color-mix(in srgb, var(--choice-color) 7%, white); }
+.member-color-option:disabled { cursor: wait; opacity: .65; }
+.member-color-option svg { margin-left: auto; flex: 0 0 auto; color: var(--choice-color); }
 .full-join { width: 100%; margin-top: 15px; }
 .spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }
 

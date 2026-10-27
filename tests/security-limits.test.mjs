@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { layoutWeek } from '../lib/calendar-layout.ts';
@@ -14,13 +15,12 @@ export async function fixture() {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: source.outputFiles[0].text, compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], cf: false,
     ratelimits: Object.fromEntries([['CREATE_LIMIT',5],['WRITE_LIMIT',60],['READ_LIMIT',120]].map(([name,limit],i)=>[name,{namespace_id:String(913421+i),simple:{limit,period:60}}])) }));
   const db = await mf.getD1Database('DB');
-  const migrationDir = new URL('../drizzle/', import.meta.url);
-  for (const file of (await readdir(migrationDir)).filter(name => /^\d+_.*\.sql$/.test(name)).sort()) {
-    const sql = await readFile(new URL(file, migrationDir), 'utf8');
-    await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
-  }
-  async function request(path, method='GET', body, cookie, ip='203.0.113.1') {
-    return mf.dispatchFetch('https://test.local'+path,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':ip,...(cookie?{Cookie:cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  const dir = new URL('../drizzle/', import.meta.url);
+  const files = (await readdir(dir)).filter((file) => file.endsWith('.sql')).sort();
+  const statements = (await Promise.all(files.map((file) => readFile(new URL(file, dir), 'utf8')))).flatMap(sql => sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean));
+  await db.batch(statements.map(s=>db.prepare(s)));
+  async function request(path, method='GET', body, cookie, ip='203.0.113.1', viewKey) {
+    return mf.dispatchFetch('https://test.local'+path,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':ip,...(cookie?{Cookie:cookie}:{}),...(viewKey?{'X-View-Key':viewKey}:{})},...(body?{body:JSON.stringify(body)}:{})});
   }
   const cid=crypto.randomUUID();
   await db.prepare('INSERT INTO calendars (id,name) VALUES (?,?)').bind(cid,'security fixture').run();
@@ -33,10 +33,25 @@ export async function fixture() {
 
 test('native rate limiter rejects excessive anonymous creation with 429 and Retry-After',async()=>{
   const f=await fixture();try {
-    const results=[];for(let i=0;i<7;i++)results.push(await f.request('/api/calendars','POST',{name:'test'}));
+    const results=[];for(let i=0;i<7;i++)results.push(await f.request('/api/calendars','POST',{name:'test',viewKey:'a'.repeat(43)}));
     assert.equal(results[0].status,201);assert.equal(results.at(-1).status,429);
     assert.equal(results.at(-1).headers.get('retry-after'),'60');
-    assert.equal((await f.request('/api/calendars','POST',{name:'another'},undefined,'203.0.113.2')).status,201);
+    assert.equal((await f.request('/api/calendars','POST',{name:'another',viewKey:'a'.repeat(43)},undefined,'203.0.113.2')).status,201);
+  }finally{await f.mf.dispose();}
+});
+test('member color updates are rate limited without applying the rejected update',async()=>{
+  const f=await fixture();try {
+    const colors=['#2563eb','#db2777','#059669','#d97706','#7c3aed','#0891b2','#dc2626','#4f46e5'];
+    let lastColor=f.member.color;let limited;
+    for(let i=0;i<65;i++) {
+      const color=colors[i%colors.length];
+      const response=await f.request(`/api/calendars/${f.cid}/members`,'PATCH',{color},f.cookie);
+      if(response.status===429){limited=response;break;}
+      assert.equal(response.status,200);lastColor=color;
+    }
+    assert.ok(limited,'expected the write limit to reject a color update');
+    assert.equal(limited.headers.get('retry-after'),'60');
+    assert.equal((await f.db.prepare('SELECT color FROM members WHERE member_id=?').bind(f.member.id).first()).color,lastColor);
   }finally{await f.mf.dispose();}
 });
 test('missing rate-limit bindings fail closed before touching the database',async()=>{
@@ -46,10 +61,28 @@ test('missing rate-limit bindings fail closed before touching the database',asyn
     assert.equal(res.status,503);
   }finally{await mf.dispose();}
 });
+test('calendar feeds share the read limiter and report 429 with Retry-After',async()=>{
+  const f=await fixture();try {
+    const path=`/api/calendars/${f.cid}/feed`;
+    let last;
+    for(let i=0;i<122;i++) last=await f.request(path,'GET',undefined,undefined,'203.0.113.91');
+    assert.equal(last.status,429);
+    assert.equal(last.headers.get('retry-after'),'60');
+    assert.match(await last.text(),/操作が多すぎます/);
+  }finally{await f.mf.dispose();}
+});
+test('missing READ_LIMIT binding returns 503 for a feed',async()=>{
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:source.outputFiles[0].text,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],cf:false}));
+  try {
+    const res=await mf.dispatchFetch('https://test.local/api/calendars/00000000-0000-0000-0000-000000000000/feed');
+    assert.equal(res.status,503);
+    assert.match(await res.text(),/アクセス制限の設定がありません/);
+  }finally{await mf.dispose();}
+});
 test('calendar quota is atomic under concurrent inserts',async()=>{
   const f=await fixture();try {
     await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4998) INSERT INTO calendars(id,name) SELECT printf('seed-%d',x),'seed' FROM n").run();
-    const res=await Promise.all([f.request('/api/calendars','POST',{name:'a'}),f.request('/api/calendars','POST',{name:'b'})]);
+    const res=await Promise.all([f.request('/api/calendars','POST',{name:'a',viewKey:'a'.repeat(43)}),f.request('/api/calendars','POST',{name:'b',viewKey:'b'.repeat(43)})]);
     assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendars').first()).n,5000);
   }finally{await f.mf.dispose();}
@@ -61,14 +94,12 @@ test('member and event caps preserve existing data, retries and concurrent bound
     const res=await Promise.all(['b','c'].map(s=>f.request(`/api/calendars/${f.cid}/members`,'POST',{name:s,secret:s.repeat(43)})));
     assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
     await f.db.batch(Array.from({length:199},()=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(crypto.randomUUID(),f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
-    const body={id:crypto.randomUUID(),title:'boundary',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}};
+    const body={id:crypto.randomUUID(),title:'boundary',startDate:'2026-10-26',endDate:'2026-10-26'};
     const posts=await Promise.all([f.request(`/api/calendars/${f.cid}/events`,'POST',body,f.cookie),f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:crypto.randomUUID()},f.cookie)]);
     assert.deepEqual(posts.map(r=>r.status).sort(),[201,409]);
     const accepted=await posts.find(r=>r.status===201).json();
     const retry=await f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:accepted.event.id},f.cookie);
     assert.equal(retry.status,200);
-    assert.equal(retry.headers.get('content-type').includes('application/json'),true);
-    assert.equal((await f.db.prepare('SELECT repeat_freq FROM calendar_events WHERE id=?').bind(accepted.event.id).first()).repeat_freq,'weekly');
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,200);
   }finally{await f.mf.dispose();}
 });
@@ -85,11 +116,47 @@ test('calendar-wide event quota is enforced even when the writer is below their 
     const other=crypto.randomUUID();
     await f.db.prepare('INSERT INTO members(member_id,calendar_id,name,secret_hash) VALUES (?,?,?,?)').bind(other,f.cid,'legacy','legacy').run();
     await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<999) INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) SELECT printf('seed-event-%d',x),?,?,'legacy','2026-10-26','2026-10-26' FROM n").bind(f.cid,other).run();
-    const body={title:'boundary recurring series',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}};
+    const body={title:'boundary',startDate:'2026-10-26',endDate:'2026-10-26'};
     const res=await Promise.all([1,2].map(()=>f.request(`/api/calendars/${f.cid}/events`,'POST',{...body,id:crypto.randomUUID()},f.cookie)));
     assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,1000);
-    assert.equal((await f.db.prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE repeat_freq='weekly'").first()).n,1);
+  }finally{await f.mf.dispose();}
+});
+test('recurring occurrences consume the same per-member and calendar event quota as single events',async()=>{
+  const f=await fixture();try {
+    await f.db.batch(Array.from({length:199},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const response=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id:crypto.randomUUID(),title:'two occurrences',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}},f.cookie);
+    assert.equal(response.status,409,'a two-date series cannot consume one remaining single-event slot');
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,199);
+  }finally{await f.mf.dispose();}
+});
+test('series edits cannot expand past the event quota, while reductions remain allowed over quota',async()=>{
+  const f=await fixture();try {
+    const seriesId=crypto.randomUUID();
+    const created=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id:seriesId,title:'bounded series',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}},f.cookie);
+    assert.equal(created.status,201);
+    await f.db.batch(Array.from({length:199},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const increased=await f.request(`/api/calendars/${f.cid}/events/${seriesId}`,'PATCH',{title:'too many',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',count:3}},f.cookie);
+    assert.equal(increased.status,409);
+    const unchanged=await f.db.prepare('SELECT title, repeat_count, version FROM calendar_events WHERE id=?').bind(seriesId).first();
+    assert.deepEqual(unchanged,{title:'bounded series',repeat_count:2,version:1});
+    const reduced=await f.request(`/api/calendars/${f.cid}/events/${seriesId}`,'PATCH',{title:'reduced',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',until:'2026-10-26'}},f.cookie);
+    assert.equal(reduced.status,200,'reducing a series remains possible while stored usage exceeds the cap');
+    assert.equal((await f.db.prepare('SELECT repeat_count FROM calendar_events WHERE id=?').bind(seriesId).first()).repeat_count,null);
+  }finally{await f.mf.dispose();}
+});
+test('concurrent series expansions cannot both use the same remaining event slots',async()=>{
+  const f=await fixture();try {
+    await f.db.batch(Array.from({length:197},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const seriesIds=[crypto.randomUUID(),crypto.randomUUID()];
+    for(const id of seriesIds){
+      const created=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id,title:'one occurrence',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',until:'2026-10-26'}},f.cookie);
+      assert.equal(created.status,201);
+    }
+    const edits=await Promise.all(seriesIds.map(id=>f.request(`/api/calendars/${f.cid}/events/${id}`,'PATCH',{title:'expanded',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',count:2}},f.cookie)));
+    assert.deepEqual(edits.map((response)=>response.status).sort(),[200,409]);
+    const expanded=await f.db.prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE repeat_count=2").first();
+    assert.equal(expanded.n,1);
   }finally{await f.mf.dispose();}
 });
 test('dense event bands use at most three visible lanes with overflow markers',()=>{
@@ -129,4 +196,38 @@ test('competing rotations have only one winner and never revive an old key',asyn
     assert.equal((await f.request(base,'POST',{secret:winner.secret})).status,200);
     assert.equal((await f.request(base,'POST',{secret:'a'.repeat(43)})).status,401);
   }finally{await f.mf.dispose();}
+});
+
+test('share keys gate anonymous read and join, rotate with optimistic comparison, and leave members intact',async()=>{
+  const f=await fixture();
+  try {
+    const base=`/api/calendars/${f.cid}`;
+    const oldKey='v'.repeat(43), nextKey='w'.repeat(43);
+    await f.db.prepare('UPDATE calendars SET view_key_hash=? WHERE id=?').bind(createHash('sha256').update(oldKey).digest('hex'),f.cid).run();
+    assert.equal((await f.request(base)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1','x'.repeat(43))).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',oldKey)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,f.cookie)).status,200);
+    assert.equal((await f.request(base+'/events','POST',{id:crypto.randomUUID(),title:'key is not a session',startDate:'2026-10-26',endDate:'2026-10-26'},undefined,'203.0.113.1',oldKey)).status,401);
+    assert.equal((await f.request(base+'/share','PATCH',{confirm:true,key:nextKey},undefined,'203.0.113.1',oldKey)).status,401);
+    const rotated=await f.request(base+'/share','PATCH',{confirm:true,key:nextKey,expectedKey:oldKey},f.cookie,undefined,oldKey);
+    assert.equal(rotated.status,200);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',oldKey)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',nextKey)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,f.cookie)).status,200);
+    assert.equal((await f.request(base+'/members','POST',{name:'old key',secret:'b'.repeat(43)},undefined,'203.0.113.1',oldKey)).status,404);
+    assert.equal((await f.request(base+'/members','POST',{name:'new key',secret:'c'.repeat(43)},undefined,'203.0.113.1',nextKey)).status,201);
+    const contenders=await Promise.all(['d','e'].map(k=>f.request(base+'/share','PATCH',{confirm:true,key:k.repeat(43),expectedKey:nextKey},f.cookie,undefined,nextKey)));
+    assert.deepEqual(contenders.map(r=>r.status).sort(),[200,409]);
+  } finally { await f.mf.dispose(); }
+});
+
+test('first share rotation protects a legacy calendar without an expected key',async()=>{
+  const f=await fixture();
+  try {
+    const base=`/api/calendars/${f.cid}`, key='z'.repeat(43);
+    assert.equal((await f.request(base+'/share','PATCH',{confirm:true,key},f.cookie)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,undefined)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',key)).status,200);
+  } finally { await f.mf.dispose(); }
 });

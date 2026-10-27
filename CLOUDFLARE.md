@@ -42,6 +42,22 @@ node scripts/cloudflare-update.mjs
 
 `drizzle/`のSQLが適用済みの状態と変わった場合は、安全のため公開を停止します。データベースの形式変更は、既存データを保持する移行手順を確認してから進めてください。公開を通すために照合情報だけを書き換えないでください。
 
+## 共有キー列の本番反映
+
+共有URL再発行のコードを公開する前に、承認された本番変更として次の順に実施します。今回の変更では本番D1への適用・公開は行いません。SQL適用中は新旧コードの併存があり得ます。旧コードで新規作成されたカレンダーは`view_key_hash`がNULLの従来モードとなり、参加メンバーが新コードの設定から初回再発行するとキー保護へ切り替わります。
+
+1. 対象の本番D1とバックアップを確認し、追加SQLだけを適用します。
+
+   ```sh
+   npx wrangler d1 execute <production-database-name> --remote --file=drizzle/0001_blue_wild_child.sql
+   ```
+
+2. `PRAGMA table_info(calendars);`で`view_key_hash`がNULL許容で追加されたこと、既存行の`view_key_hash`がNULLであること、カレンダー・参加者・予定の件数が適用前と一致することを確認します。失敗や件数差があれば公開へ進みません。
+3. 適用したSQLのSHA-256を確認し、`cloudflare.production.json`の`migrations`へ`drizzle/0001_blue_wild_child.sql`の指紋を追加します。SQLとDBの状態を照合してから設定を更新します。指紋だけを先に更新してはいけません。
+4. 指紋照合を含む通常のビルド・公開を行います。
+
+コードをマージしただけでは本番に反映されません。SQLは既存データを再取り込みせず、差し戻し時も列を削除しません。移行期間中に旧コードへ戻って作られたカレンダーはNULLのままなので、復旧後に初回再発行で保護を有効化できます。
+
 ## GitHub Actionsによる自動更新
 
 `.github/workflows/cloudflare.yml`で、PRとmasterへのpush時に単体テスト、一時D1を使ったAPIテスト、ビルド、本番設定の照合を実行します。成功したmasterだけをCloudflareへ公開します。Actionsタブからの手動実行にも対応しています。
@@ -64,9 +80,9 @@ node scripts/cloudflare-update.mjs
 繰り返し予定の公開には、`drizzle/`に追加されたSQLを本番D1へ適用してからWorkerを更新します。本番適用はPRの範囲外です。運用担当者が対象アカウント・D1を確認したうえで、次の順に実行してください。
 
 1. `cloudflare.production.json`のD1 IDが対象の本番D1と一致することを確認します。直近のバックアップも確認してください。
-2. 新しい`drizzle/NNNN_*.sql`の内容をレビューし、対象D1へそのSQLのみをファイル名順に適用します。例: `npx wrangler d1 execute <database-name> --remote --file drizzle/0001_bumpy_hercules.sql`。既に適用済みなら再実行しません。
+2. 新しい`drizzle/NNNN_*.sql`の内容をレビューし、対象D1へそのSQLのみをファイル名順に適用します。例: `npx wrangler d1 execute <database-name> --remote --file drizzle/0002_bumpy_hercules.sql`。既に適用済みなら再実行しません。
 3. D1で`PRAGMA table_info(calendar_events);`を実行し、`repeat_freq`、`repeat_until`、`repeat_count`が存在することを確認します。既存予定のこれらの値がNULLで、行数・既存データが維持されていることも確認します。
-4. 確認後に限り、`cloudflare.production.json`の`migrations`へ新しいSQLファイルのパスとSHA-256をファイル名順で追加します。SHA-256は`sha256sum drizzle/0001_bumpy_hercules.sql`で確認できます。変更はSQL適用確認と同じPRでレビュー・コミットします。SQLの適用確認前に照合情報を書き換えないでください。
+4. 確認後に限り、`cloudflare.production.json`の`migrations`へ新しいSQLファイルのパスとSHA-256をファイル名順で追加します。SHA-256は`sha256sum drizzle/0002_bumpy_hercules.sql`で確認できます。変更はSQL適用確認と同じPRでレビュー・コミットします。SQLの適用確認前に照合情報を書き換えないでください。
 5. 通常更新コマンド`node scripts/cloudflare-update.mjs`でWorkerをビルド・公開し、公開後に既存予定の表示と繰り返し予定の登録・展開を確認します。
 
 SQL適用が失敗した場合や、列・既存データの確認が取れない場合は公開を止め、照合値も更新しません。
