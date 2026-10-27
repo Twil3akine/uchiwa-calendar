@@ -43,9 +43,21 @@ const originalArg = process.argv[2];
 try {
   const db = await miniflare.getD1Database('DB');
   const migrationFiles = (await readdir(migrationDir)).filter((file) => file.endsWith('.sql')).sort();
-  const statements = (await Promise.all(migrationFiles.map((file) => readFile(new URL(file, migrationDir), 'utf8')))).flatMap((migration) => migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean));
-  assert.ok(statements.length >= 3, 'expected D1 migration statements');
-  await db.batch(statements.map((statement) => db.prepare(statement)));
+  assert.deepEqual(migrationFiles.slice(0, 3), ['0000_lean_omega_red.sql', '0001_blue_wild_child.sql', '0002_bumpy_hercules.sql']);
+  for (const [index, file] of migrationFiles.entries()) {
+    if (index === 2) {
+      await db.prepare("INSERT INTO calendars (id, name) VALUES ('legacy-calendar', 'legacy')").run();
+      await db.prepare("INSERT INTO members (member_id, calendar_id, name, secret_hash) VALUES ('legacy-member', 'legacy-calendar', 'legacy', 'legacy-hash')").run();
+      await db.prepare("INSERT INTO calendar_events (id, calendar_id, member_id, title, start_date, end_date) VALUES ('legacy-event', 'legacy-calendar', 'legacy-member', 'legacy', '2026-01-01', '2026-01-01')").run();
+    }
+    const migration = await readFile(new URL(file, migrationDir), 'utf8');
+    const parts = migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean);
+    await db.batch(parts.map((statement) => db.prepare(statement)));
+    if (index === 2) {
+      const legacy = await db.prepare("SELECT view_key_hash, repeat_freq, repeat_until, repeat_count FROM calendars LEFT JOIN calendar_events ON calendar_events.calendar_id=calendars.id WHERE calendars.id='legacy-calendar'").first();
+      assert.deepEqual(legacy, { view_key_hash: null, repeat_freq: null, repeat_until: null, repeat_count: null }, 'prior D1 rows remain compatible with both nullable additions');
+    }
+  }
   const legacyId = randomUUID();
   await db.prepare('INSERT INTO calendars (id, name, view_key_hash) VALUES (?, ?, NULL)').bind(legacyId, 'Legacy feed compatibility').run();
 

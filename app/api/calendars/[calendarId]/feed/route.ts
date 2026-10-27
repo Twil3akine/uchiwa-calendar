@@ -1,6 +1,7 @@
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
-import { calendarEvents, calendars, members } from "../../../../../db/schema";
+import { calendars } from "../../../../../db/schema";
+import { listCalendarEvents } from "../../../../../lib/server/calendar-service";
 import { generateIcalFeed } from "../../../../../lib/ical";
 import { hashSecret, validateViewKey } from "../../../../../lib/server/auth";
 import { fail, HttpError, requireCalendarId } from "../../../../../lib/server/http";
@@ -22,18 +23,8 @@ export async function GET(request: Request, { params }: Context) {
       try { validateViewKey(suppliedKey); } catch { throw new HttpError(404, "カレンダーが見つかりません。"); }
       if (await hashSecret(suppliedKey) !== calendar.viewKeyHash) throw new HttpError(404, "カレンダーが見つかりません。");
     }
-    const rows = await db.select({
-      id: calendarEvents.id,
-      title: calendarEvents.title,
-      startDate: calendarEvents.startDate,
-      endDate: calendarEvents.endDate,
-      updatedAt: calendarEvents.updatedAt,
-      memberName: members.name,
-    }).from(calendarEvents)
-      .innerJoin(members, eq(calendarEvents.memberId, members.id))
-      .where(eq(calendarEvents.calendarId, calendarId))
-      .orderBy(asc(calendarEvents.startDate), asc(calendarEvents.id));
-    const body = generateIcalFeed({ calendarName: calendar.name, events: rows });
+    const rows = await listCalendarEvents({ calendarId, memberId: "" });
+    const body = generateIcalFeed({ calendarName: calendar.name, events: rows.map(({ id, title, startDate, endDate, updatedAt, memberName }) => ({ id, title, startDate, endDate, updatedAt, memberName })) });
     return new Response(body, { headers: {
       "Content-Type": "text/calendar; charset=utf-8",
       "Cache-Control": "no-store",

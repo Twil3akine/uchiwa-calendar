@@ -122,6 +122,43 @@ test('calendar-wide event quota is enforced even when the writer is below their 
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,1000);
   }finally{await f.mf.dispose();}
 });
+test('recurring occurrences consume the same per-member and calendar event quota as single events',async()=>{
+  const f=await fixture();try {
+    await f.db.batch(Array.from({length:199},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const response=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id:crypto.randomUUID(),title:'two occurrences',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}},f.cookie);
+    assert.equal(response.status,409,'a two-date series cannot consume one remaining single-event slot');
+    assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendar_events').first()).n,199);
+  }finally{await f.mf.dispose();}
+});
+test('series edits cannot expand past the event quota, while reductions remain allowed over quota',async()=>{
+  const f=await fixture();try {
+    const seriesId=crypto.randomUUID();
+    const created=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id:seriesId,title:'bounded series',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',count:2}},f.cookie);
+    assert.equal(created.status,201);
+    await f.db.batch(Array.from({length:199},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const increased=await f.request(`/api/calendars/${f.cid}/events/${seriesId}`,'PATCH',{title:'too many',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',count:3}},f.cookie);
+    assert.equal(increased.status,409);
+    const unchanged=await f.db.prepare('SELECT title, repeat_count, version FROM calendar_events WHERE id=?').bind(seriesId).first();
+    assert.deepEqual(unchanged,{title:'bounded series',repeat_count:2,version:1});
+    const reduced=await f.request(`/api/calendars/${f.cid}/events/${seriesId}`,'PATCH',{title:'reduced',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',until:'2026-10-26'}},f.cookie);
+    assert.equal(reduced.status,200,'reducing a series remains possible while stored usage exceeds the cap');
+    assert.equal((await f.db.prepare('SELECT repeat_count FROM calendar_events WHERE id=?').bind(seriesId).first()).repeat_count,null);
+  }finally{await f.mf.dispose();}
+});
+test('concurrent series expansions cannot both use the same remaining event slots',async()=>{
+  const f=await fixture();try {
+    await f.db.batch(Array.from({length:197},(_,i)=>f.db.prepare('INSERT INTO calendar_events(id,calendar_id,member_id,title,start_date,end_date) VALUES (?,?,?,?,?,?)').bind(`seed-${i}`,f.cid,f.member.id,'seed','2026-10-26','2026-10-26')));
+    const seriesIds=[crypto.randomUUID(),crypto.randomUUID()];
+    for(const id of seriesIds){
+      const created=await f.request(`/api/calendars/${f.cid}/events`,'POST',{id,title:'one occurrence',startDate:'2026-10-26',endDate:'2026-10-26',recurrence:{freq:'weekly',until:'2026-10-26'}},f.cookie);
+      assert.equal(created.status,201);
+    }
+    const edits=await Promise.all(seriesIds.map(id=>f.request(`/api/calendars/${f.cid}/events/${id}`,'PATCH',{title:'expanded',startDate:'2026-10-26',endDate:'2026-10-26',version:1,recurrence:{freq:'weekly',count:2}},f.cookie)));
+    assert.deepEqual(edits.map((response)=>response.status).sort(),[200,409]);
+    const expanded=await f.db.prepare("SELECT COUNT(*) AS n FROM calendar_events WHERE repeat_count=2").first();
+    assert.equal(expanded.n,1);
+  }finally{await f.mf.dispose();}
+});
 test('dense event bands use at most three visible lanes with overflow markers',()=>{
   const days=['2026-10-25','2026-10-26','2026-10-27','2026-10-28','2026-10-29','2026-10-30','2026-10-31'];
   const spans=layoutWeek(days,Array.from({length:1000},(_,i)=>({id:String(i),memberId:'m',title:'busy',startDate:days[0],endDate:days[6],version:1})),3);

@@ -11,8 +11,8 @@ const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 const tools = [
   { name: "list_events", description: "カレンダーの予定を一覧します。from/toは予定期間と重なる日付範囲です。", inputSchema: { type: "object", properties: { from: { type: "string", format: "date" }, to: { type: "string", format: "date" } }, additionalProperties: false } },
-  { name: "add_event", description: "自分の予定を登録します。eventIdは再送時にも同じUUIDを指定してください。", inputSchema: { type: "object", required: ["eventId", "title", "startDate", "endDate"], properties: { eventId: { type: "string", format: "uuid" }, title: { type: "string" }, startDate: { type: "string", format: "date" }, endDate: { type: "string", format: "date" } }, additionalProperties: false } },
-  { name: "delete_event", description: "自分の予定を、一覧で取得した版番号を指定して削除します。", inputSchema: { type: "object", required: ["eventId", "version"], properties: { eventId: { type: "string", format: "uuid" }, version: { type: "integer", minimum: 1 } }, additionalProperties: false } },
+  { name: "add_event", description: "自分の予定を登録します。毎週繰り返す場合はrecurrenceにfreq=weeklyとuntilまたはcountを指定します。eventIdは再送時にも同じUUIDを指定してください。", inputSchema: { type: "object", required: ["eventId", "title", "startDate", "endDate"], properties: { eventId: { type: "string", format: "uuid" }, title: { type: "string" }, startDate: { type: "string", format: "date" }, endDate: { type: "string", format: "date" }, recurrence: { type: "object", properties: { freq: { type: "string", enum: ["weekly"] }, until: { type: ["string", "null"], format: "date" }, count: { type: ["integer", "null"], minimum: 2, maximum: 53 } }, required: ["freq"], additionalProperties: false } }, additionalProperties: false } },
+  { name: "delete_event", description: "自分の予定または繰り返しシリーズ全体を削除します。繰り返し予定の場合、一覧の出現idではなくseriesIdをeventIdに指定し、版番号を添えてください。", inputSchema: { type: "object", required: ["eventId", "version"], properties: { eventId: { type: "string", format: "uuid" }, version: { type: "integer", minimum: 1 } }, additionalProperties: false } },
 ];
 
 function response(body: unknown, status = 200, headers?: HeadersInit) {
@@ -99,7 +99,7 @@ function validateEventId(value: unknown) {
 async function callTool(name: unknown, rawArgs: unknown, calendarId: string, memberId: string) {
   if (typeof name !== "string") throw new RpcParamsError();
   const args = paramsObject(rawArgs);
-  const allowed = name === "list_events" ? ["from", "to"] : name === "add_event" ? ["eventId", "title", "startDate", "endDate"] : name === "delete_event" ? ["eventId", "version"] : null;
+  const allowed = name === "list_events" ? ["from", "to"] : name === "add_event" ? ["eventId", "title", "startDate", "endDate", "recurrence"] : name === "delete_event" ? ["eventId", "version"] : null;
   if (!allowed) throw new ToolExecutionError("指定されたツールはありません。");
   if (Object.keys(args).some((key) => !allowed.includes(key))) throw new ToolExecutionError("未対応の引数があります。");
   if (name === "list_events") {
@@ -115,7 +115,7 @@ async function callTool(name: unknown, rawArgs: unknown, calendarId: string, mem
     const startDate = validDate(args.startDate, "開始");
     const endDate = validDate(args.endDate, "終了");
     if (endDate < startDate) throw new ToolExecutionError("終了日は開始日以降にしてください。");
-    const created = await addCalendarEvent({ calendarId, memberId }, { id: eventId, title, startDate, endDate });
+    const created = await addCalendarEvent({ calendarId, memberId }, { id: eventId, title, startDate, endDate, recurrence: args.recurrence });
     return { event: created.event };
   }
   const eventId = validateEventId(args.eventId);

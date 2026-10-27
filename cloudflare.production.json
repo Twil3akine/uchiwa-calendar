@@ -12,6 +12,10 @@
     {
       "path": "drizzle/0001_blue_wild_child.sql",
       "sha256": "532df7728d392525f2d5ef85187e9d2f58f342b08f1aac8283e363f291215cc4"
+    },
+    {
+      "path": "drizzle/0002_bumpy_hercules.sql",
+      "sha256": "9236ddde8aca726349f142b2aa3090a4a16f7dac264f0ca1818fc5bb66b53195"
     }
   ]
 }

@@ -200,8 +200,9 @@ async function main() {
   passed('restores the same member identity, color, and rights from its secret');
 
   const mcpPath = `/api/calendars/${encodeURIComponent(calendarA.id)}/mcp`;
+  let activeSecret = secretA;
   const mcp = (body, options = {}) => request('POST', mcpPath, {
-    body, headers: { Authorization: `Bearer ${secretA}`, ...(options.headers || {}) },
+    body, headers: { Authorization: `Bearer ${activeSecret}`, ...(options.headers || {}) },
     ...(options.originHeader === undefined ? {} : { originHeader: options.originHeader }),
   });
   const mcpInit = await mcp({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'isolated-test', version: '1' } } }, { headers: { 'MCP-Protocol-Version': '2025-11-25' } });
@@ -291,6 +292,7 @@ async function main() {
   });
   assert.equal(rotated.data.member.id, memberA.id);
   assert.equal(rotated.data.secret, rotatedSecret, 'the rotation response returns the new secret to the authenticated member by design');
+  activeSecret = rotatedSecret;
   const revokedBearer = await request('POST', mcpPath, { body: { jsonrpc: '2.0', id: 13, method: 'tools/list' }, headers: { Authorization: `Bearer ${secretA}` } });
   assert.equal(revokedBearer.status, 401);
   passed('revokes the old MCP Bearer when the participant secret is rotated');
@@ -302,6 +304,47 @@ async function main() {
   const memberC = joinC.data.member;
   assert.notEqual(memberC.id, memberA.id, 'same-calendar same-name members must have different IDs');
   assert.notEqual(memberC.color, memberA.color, 'same-calendar same-name members must have different colors');
+  const recurringBody = { id: eventId(), title: 'weekly series', startDate: '2026-03-30', endDate: '2026-03-30', recurrence: { freq: 'weekly', until: '2026-04-20', count: null } };
+  const recurringCreated = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: recurringBody, cookies: restoredJarA, expectedStatus: 201 });
+  assert.equal(recurringCreated.data.event.repeatFreq, 'weekly');
+  const recurringEvents = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.deepEqual(recurringEvents.map((item) => item.startDate), ['2026-03-30', '2026-04-06', '2026-04-13', '2026-04-20']);
+  assert.ok(recurringEvents.every((item) => item.id === `${recurringBody.id}_${item.startDate.replaceAll('-', '')}` && item.endDate === item.startDate && item.version === 1 && item.recurrence.freq === 'weekly'));
+  const recurringRetry = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: recurringBody, cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(recurringRetry.data.event.id, recurringBody.id);
+  const recurringConflict = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: { ...recurringBody, recurrence: { freq: 'weekly', until: null, count: 2 } }, cookies: restoredJarA });
+  assert.equal(recurringConflict.status, 409);
+  const recurringFeed = await feed(calendarA.id);
+  assert.equal(recurringFeed.status, 200);
+  assert.match(recurringFeed.body, new RegExp(`UID:${recurringBody.id}_20260406@uchiwa-calendar`));
+  const recurringMcpList = await mcp({ jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'list_events', arguments: { from: '2026-04-06', to: '2026-04-06' } } });
+  assert.ok(recurringMcpList.data.result.structuredContent.events.some((item) => item.seriesId === recurringBody.id && item.startDate === '2026-04-06'));
+  const otherRecurringEdit = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'forbidden', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: 1 }, cookies: jarC });
+  assert.equal(otherRecurringEdit.status, 403);
+  const recurringEdited = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringEvents[2].id.replace(/_\d{8}$/, '')}`, { body: { title: 'weekly edited', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: recurringEvents[2].version }, cookies: restoredJarA, expectedStatus: 200 });
+  const afterSeriesEdit = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.ok(afterSeriesEdit.every((item) => item.title === 'weekly edited' && item.version === recurringEdited.data.event.version && item.recurrence?.freq === 'weekly'));
+  const staleOccurrenceEdit = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'stale overwrite', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: 1 }, cookies: restoredJarA });
+  assert.equal(staleOccurrenceEdit.status, 409);
+  const otherRecurringDelete = await request('DELETE', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { version: recurringEdited.data.event.version }, cookies: jarC });
+  assert.equal(otherRecurringDelete.status, 403);
+  const recurrenceRemoved = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'single now', startDate: recurringBody.startDate, endDate: recurringBody.startDate, version: recurringEdited.data.event.version, recurrence: null }, cookies: restoredJarA, expectedStatus: 200 });
+  const afterRemoval = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.deepEqual(afterRemoval.map((item) => item.startDate), [recurringBody.startDate]);
+  assert.equal(afterRemoval[0].version, recurrenceRemoved.data.event.version);
+  const mcpRecurringBody = { eventId: eventId(), title: 'MCP weekly', startDate: '2026-05-04', endDate: '2026-05-04', recurrence: { freq: 'weekly', count: 3 } };
+  const mcpRecurring = await mcp({ jsonrpc: '2.0', id: 22, method: 'tools/call', params: { name: 'add_event', arguments: mcpRecurringBody } });
+  assert.equal(mcpRecurring.data.result.structuredContent.event.repeatFreq, 'weekly');
+  const mcpRecurringList = await mcp({ jsonrpc: '2.0', id: 23, method: 'tools/call', params: { name: 'list_events', arguments: { from: '2026-05-11', to: '2026-05-11' } } });
+  const mcpOccurrence = mcpRecurringList.data.result.structuredContent.events.find((item) => item.seriesId === mcpRecurringBody.eventId && item.startDate === '2026-05-11');
+  assert.ok(mcpOccurrence);
+  assert.notEqual(mcpOccurrence.id, mcpOccurrence.seriesId, 'the occurrence ID is not the series UUID used for deletion');
+  const mcpOtherDelete = await request('POST', mcpPath, { body: { jsonrpc: '2.0', id: 24, method: 'tools/call', params: { name: 'delete_event', arguments: { eventId: mcpOccurrence.seriesId, version: mcpOccurrence.version } } }, headers: { Authorization: `Bearer ${secretC}` } });
+  assert.equal(mcpOtherDelete.data.result.isError, true, 'another member cannot delete the listed seriesId');
+  const mcpRecurringDelete = await mcp({ jsonrpc: '2.0', id: 25, method: 'tools/call', params: { name: 'delete_event', arguments: { eventId: mcpOccurrence.seriesId, version: mcpOccurrence.version } } });
+  assert.deepEqual(mcpRecurringDelete.data.result.structuredContent, { ok: true });
+  passed('expands recurring events in calendar, iCalendar and MCP, and applies owner/version guarded series edits and deletes');
+
   const cPatchA = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${event.id}`, {
     body: { title: 'other member edit', startDate: event.startDate, endDate: event.endDate, version: event.version }, cookies: jarC,
   });

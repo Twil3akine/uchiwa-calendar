@@ -75,6 +75,18 @@ node scripts/cloudflare-update.mjs
 
 参考: [Cloudflare公式のGitHub Actions設定](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
 
+## 繰り返し予定のDB更新
+
+繰り返し予定の公開には、`drizzle/`に追加されたSQLを本番D1へ適用してからWorkerを更新します。本番適用はPRの範囲外です。運用担当者が対象アカウント・D1を確認したうえで、次の順に実行してください。
+
+1. `cloudflare.production.json`のD1 IDが対象の本番D1と一致することを確認します。直近のバックアップも確認してください。
+2. 新しい`drizzle/NNNN_*.sql`の内容をレビューし、対象D1へそのSQLのみをファイル名順に適用します。例: `npx wrangler d1 execute <database-name> --remote --file drizzle/0002_bumpy_hercules.sql`。既に適用済みなら再実行しません。
+3. D1で`PRAGMA table_info(calendar_events);`を実行し、`repeat_freq`、`repeat_until`、`repeat_count`が存在することを確認します。既存予定のこれらの値がNULLで、行数・既存データが維持されていることも確認します。
+4. 確認後に限り、`cloudflare.production.json`の`migrations`へ新しいSQLファイルのパスとSHA-256をファイル名順で追加します。SHA-256は`sha256sum drizzle/0002_bumpy_hercules.sql`で確認できます。変更はSQL適用確認と同じPRでレビュー・コミットします。SQLの適用確認前に照合情報を書き換えないでください。
+5. 通常更新コマンド`node scripts/cloudflare-update.mjs`でWorkerをビルド・公開し、公開後に既存予定の表示と繰り返し予定の登録・展開を確認します。
+
+SQL適用が失敗した場合や、列・既存データの確認が取れない場合は公開を止め、照合値も更新しません。
+
 ## 公開URLを短くする
 
 初回移行で付けたランダムなWorker名を、`uchiwa-calendar`へ変更する場合は、GitHubの最新コードを取得してから実行します。
