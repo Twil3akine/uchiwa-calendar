@@ -42,8 +42,13 @@ function absorbCookies(response, targetJar) {
   }
 }
 
-async function request(method, path, { body, cookies, expectedStatus, originHeader = origin } = {}) {
+const viewKeys = new Map();
+
+async function request(method, path, { body, cookies, expectedStatus, originHeader = origin, withoutViewKey = false, viewKey } = {}) {
   const headers = { 'Content-Type': 'application/json' };
+  const calendarId = path.match(/^\/api\/calendars\/([^/]+)/)?.[1];
+  const key = withoutViewKey ? undefined : viewKey || viewKeys.get(decodeURIComponent(calendarId || ''));
+  if (key) headers['X-View-Key'] = key;
   if (originHeader !== null) headers.Origin = originHeader;
   if (cookies?.cookies.size) {
     headers.Cookie = [...cookies.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
@@ -84,11 +89,13 @@ function noSecretMaterial(value, secrets) {
 
 async function main() {
   const anonymous = jar();
+  const viewKeyA = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const viewKeyB = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const calendarAResponse = await request('POST', '/api/calendars', {
-    body: { name: `A-${randomUUID()}` },
+    body: { name: `A-${randomUUID()}`, viewKey: viewKeyA },
   });
   const calendarBResponse = await request('POST', '/api/calendars', {
-    body: { name: `B-${randomUUID()}` },
+    body: { name: `B-${randomUUID()}`, viewKey: viewKeyB },
   });
   ok(calendarAResponse, 'create calendar A');
   ok(calendarBResponse, 'create calendar B');
@@ -96,8 +103,10 @@ async function main() {
   const calendarB = calendarBResponse.data.calendar;
   assert.ok(calendarA?.id && calendarB?.id);
   assert.notEqual(calendarA.id, calendarB.id);
+  viewKeys.set(calendarA.id, viewKeyA); viewKeys.set(calendarB.id, viewKeyB);
   passed('creates two independent calendars');
 
+  await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { expectedStatus: 404, withoutViewKey: true });
   const readA = await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { expectedStatus: 200 });
   assert.equal(readA.data.me, null);
   assert.doesNotMatch(JSON.stringify(readA.data), /"(?:secret|secretHash|secret_hash|tokenHash|token_hash)"\s*:/i);
@@ -105,7 +114,7 @@ async function main() {
     body: { id: eventId(), title: 'anonymous', startDate: '2026-04-01', endDate: '2026-04-01' },
   });
   assert.ok([401, 403].includes(anonymousWrite.status), `anonymous event write should be denied, got ${anonymousWrite.status}`);
-  passed('allows anonymous calendar read and denies anonymous writes');
+  passed('requires a valid shared key for anonymous calendar reads and denies anonymous writes');
 
   const secretA = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const secretB = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);

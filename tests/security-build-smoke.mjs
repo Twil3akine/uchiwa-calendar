@@ -10,8 +10,11 @@ const modules=['index.js',...files.filter(p=>p.endsWith('.js')&&p!=='index.js')]
 const mf=new Miniflare(convertV4MiniflareOptions({modules,modulesRoot:root,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],d1Databases:['DB'],cf:false,ratelimits:{CREATE_LIMIT:{namespace_id:'913421',simple:{limit:5,period:60}},WRITE_LIMIT:{namespace_id:'913422',simple:{limit:60,period:60}},READ_LIMIT:{namespace_id:'913423',simple:{limit:120,period:60}}}}));
 try {
   const db=await mf.getD1Database('DB');
-  const sql=await readFile('drizzle/0000_lean_omega_red.sql','utf8');
-  await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
+  const migrationFiles=(await readdir('drizzle')).filter(file=>file.endsWith('.sql')).sort();
+  for(const file of migrationFiles) {
+    const sql=await readFile(path.join('drizzle',file),'utf8');
+    await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
+  }
   const page=await mf.dispatchFetch('https://test.local/');
   assert.equal(page.status,200);
   assert.equal(page.headers.get('x-frame-options'),'DENY');
@@ -31,12 +34,12 @@ try {
   const shared=await mf.dispatchFetch('https://test.local/?c=00000000-0000-4000-8000-000000000001');
   const sharedHtml=await shared.text();
   assert.ok(sharedHtml.includes('https://uchiwa-calendar.twil3akine.workers.dev/og.png'));
-  async function send(endpoint,body,cookie,method='POST') {
-    return mf.dispatchFetch('https://test.local'+endpoint,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':'203.0.113.9',...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
+  async function send(endpoint,body,cookie,method='POST',viewKey) {
+    return mf.dispatchFetch('https://test.local'+endpoint,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':'203.0.113.9',...(cookie?{Cookie:cookie}:{}),...(viewKey?{'X-View-Key':viewKey}:{})},body:JSON.stringify(body)});
   }
-  const created=await send('/api/calendars',{name:'build smoke'});assert.equal(created.status,201);
+  const created=await send('/api/calendars',{name:'build smoke',viewKey:'v'.repeat(43)});assert.equal(created.status,201);
   const cid=(await created.json()).calendar.id;
-  const joined=await send(`/api/calendars/${cid}/members`,{name:'member',secret:'a'.repeat(43)});assert.equal(joined.status,201);
+  const joined=await send(`/api/calendars/${cid}/members`,{name:'member',secret:'a'.repeat(43)},undefined,'POST','v'.repeat(43));assert.equal(joined.status,201);
   assert.ok(joined.headers.get('set-cookie').includes('Secure'));
   const cookie=joined.headers.get('set-cookie').split(';')[0];
   const rotated=await send(`/api/calendars/${cid}/session`,{confirm:true,secret:'b'.repeat(43)},cookie,'PATCH');assert.equal(rotated.status,200);

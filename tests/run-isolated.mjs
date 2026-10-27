@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +10,7 @@ const { Miniflare, convertV4MiniflareOptions } = wranglerRequire('miniflare');
 const esbuild = wranglerRequire('esbuild');
 
 const workerEntry = fileURLToPath(new URL('./api-worker.ts', import.meta.url));
-const migrationPath = new URL('../drizzle/0000_lean_omega_red.sql', import.meta.url);
+const migrationDir = new URL('../drizzle/', import.meta.url);
 const bundle = await esbuild.build({
   entryPoints: [workerEntry],
   bundle: true,
@@ -40,8 +40,8 @@ const originalArg = process.argv[2];
 
 try {
   const db = await miniflare.getD1Database('DB');
-  const migration = await readFile(migrationPath, 'utf8');
-  const statements = migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean);
+  const migrationFiles = (await readdir(migrationDir)).filter((file) => file.endsWith('.sql')).sort();
+  const statements = (await Promise.all(migrationFiles.map((file) => readFile(new URL(file, migrationDir), 'utf8')))).flatMap((migration) => migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean));
   assert.ok(statements.length >= 3, 'expected D1 migration statements');
   await db.batch(statements.map((statement) => db.prepare(statement)));
 

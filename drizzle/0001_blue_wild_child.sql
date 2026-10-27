@@ -1,0 +1,1 @@
+ALTER TABLE `calendars` ADD `view_key_hash` text;
