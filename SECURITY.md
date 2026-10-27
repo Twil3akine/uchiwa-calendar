@@ -29,7 +29,15 @@ DBへの登録には次の厳密な件数上限があります。同じINSERT文
 
 参加者本人が「設定」→「個人リンクを再発行」で確認すると、以前の個人リンクとすべての旧Cookieが無効になります。新しいキーはこの端末へ保存し、他の端末では新しい個人リンクから開き直します。参加者ID・名前・色・予定は引き継ぎます。
 
-応答が途切れても新しいキーを失わないよう、送信前に候補キーを端末内へ一時保存し、再読み込み時に復元を試みます。復元キーは引き続きlocalStorageに保持します。同一originのXSSや端末侵害によるキー漏えいは防げないため、再発行機能だけでこのリスクが解消したとは考えないでください。HTML/APIにはキャッシュ・Referrer制御とフレーム埋め込み禁止等を付けますが、厳密なscript-src CSPと短期セッション分離は未実装です。
+応答が途切れても新しいキーを失わないよう、送信前に候補キーを端末内へ一時保存し、再読み込み時に復元を試みます。復元キーは引き続きlocalStorageに保持します。同一originのXSSや端末侵害によるキー漏えいは防げないため、再発行機能だけでこのリスクが解消したとは考えないでください。
+
+### Content Security Policy
+
+Worker は `frame-ancestors 'none'`、`object-src 'none'`、`base-uri 'self'`、`connect-src 'self'`、`form-action 'self'`、`worker-src 'self'`、`manifest-src 'self'`、`media-src 'self'`、`img-src 'self'`、`font-src 'self'` と `style-src 'self' 'unsafe-inline'` を設定します。`default-src` は設定しません。ビルド成果物には data URI の画像・フォントがなく、画面は同一originのOG画像とシステムフォントを使うため、`img-src` と `font-src` に `data:` は含めていません。
+
+`style-src` の `'unsafe-inline'` は、参加者色などを React が動的な style 属性として設定するため残しています。style 要素向け指令への分離は行っていません。
+
+厳密な `script-src` はまだ設定していないため、script実行元はこのCSPで制限されません。2026-10-27にビルド済みWorkerを Miniflare `dispatchFetch` で測定した結果は次のとおりです。トップページ（繰り返し取得と異なる `?c=` を含む）のインラインscriptは4件で、同一ビルド内ではハッシュ集合が安定していました。一方、404ページは7件で集合が異なります。また、vinext が埋め込む互換性IDがビルドごとに変わるため、ハッシュ集合はビルド間でも変わります。固定のハッシュ一覧で全応答を覆うには、deploymentId の固定と、ビルドごとの一覧生成・検証（security-build-smoke での再計算照合）の仕組みが別途必要と判断し、今回は見送りました。security-build-smoke は現在の指令構成と、応答ごとのハッシュ集合の測定結果の出力を検証します。`script-src` と短期セッション分離は未実装です。
 
 ## 依存関係と公開
 

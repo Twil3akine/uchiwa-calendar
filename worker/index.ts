@@ -28,7 +28,10 @@ const worker = {
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-Frame-Options", "DENY");
-    headers.set("Content-Security-Policy", "frame-ancestors 'none'; object-src 'none'; base-uri 'self'");
+    headers.set(
+      "Content-Security-Policy",
+      "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; connect-src 'self'; form-action 'self'; worker-src 'self'; manifest-src 'self'; media-src 'self'; img-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'",
+    );
     headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
     if (!new URL(request.url).pathname.startsWith("/_next/static/")) headers.set("Cache-Control", "no-store");
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
