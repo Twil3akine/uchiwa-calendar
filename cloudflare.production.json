@@ -8,6 +8,10 @@
     {
       "path": "drizzle/0000_lean_omega_red.sql",
       "sha256": "68da9d3015fa52ff81f18a1fb1e949e7e85c450b866266cc2dfc2c7e27b93080"
+    },
+    {
+      "path": "drizzle/0001_blue_wild_child.sql",
+      "sha256": "532df7728d392525f2d5ef85187e9d2f58f342b08f1aac8283e363f291215cc4"
     }
   ]
 }
