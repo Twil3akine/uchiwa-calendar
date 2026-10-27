@@ -3,6 +3,7 @@ import { getDb } from "../../../../../../db";
 import { calendarEvents } from "../../../../../../db/schema";
 import { requireMember } from "../../../../../../lib/server/auth";
 import { rateLimit } from "../../../../../../lib/server/security";
+import { deleteCalendarEvent } from "../../../../../../lib/server/calendar-service";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, requiredString, validDate } from "../../../../../../lib/server/http";
 
 type Context = { params: Promise<{ calendarId: string; eventId: string }> };
@@ -53,10 +54,7 @@ export async function DELETE(request: Request, { params }: Context) {
     requireKeys(body, ["version"]);
     const version = versionValue(body.version);
     const member = await requireMember(request, calendarId);
-    const previous = await ownedEvent(calendarId, eventId, member.id);
-    if (previous.version !== version) throw new HttpError(409, "予定がほかの操作で更新されました。最新の内容を読み込んでください。");
-    const deleted = await getDb().delete(calendarEvents).where(and(eq(calendarEvents.id, eventId), eq(calendarEvents.calendarId, calendarId), eq(calendarEvents.memberId, member.id), eq(calendarEvents.version, version))).returning({ id: calendarEvents.id });
-    if (!deleted.length) throw new HttpError(409, "予定がほかの操作で更新されました。最新の内容を読み込んでください。");
+    await deleteCalendarEvent({ calendarId, memberId: member.id }, eventId, version);
     return json({ ok: true });
   } catch (error) {
     return fail(error);

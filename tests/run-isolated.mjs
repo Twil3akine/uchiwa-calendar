@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +37,7 @@ const miniflare = new Miniflare(convertV4MiniflareOptions({
 
 const originalFetch = globalThis.fetch;
 const originalTestUrl = process.env.CALENDAR_TEST_URL;
+const originalLegacyId = process.env.CALENDAR_TEST_LEGACY_ID;
 const originalArg = process.argv[2];
 
 try {
@@ -44,11 +46,14 @@ try {
   const statements = (await Promise.all(migrationFiles.map((file) => readFile(new URL(file, migrationDir), 'utf8')))).flatMap((migration) => migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean));
   assert.ok(statements.length >= 3, 'expected D1 migration statements');
   await db.batch(statements.map((statement) => db.prepare(statement)));
+  const legacyId = randomUUID();
+  await db.prepare('INSERT INTO calendars (id, name, view_key_hash) VALUES (?, ?, NULL)').bind(legacyId, 'Legacy feed compatibility').run();
 
   globalThis.fetch = async (input, init) => {
     return miniflare.dispatchFetch(input, init);
   };
   process.env.CALENDAR_TEST_URL = 'http://test.local';
+  process.env.CALENDAR_TEST_LEGACY_ID = legacyId;
   process.argv[2] = 'http://test.local';
 
   const integration = await import('./calendar-api.mjs?isolated=1');
@@ -61,6 +66,8 @@ try {
   globalThis.fetch = originalFetch;
   if (originalTestUrl === undefined) delete process.env.CALENDAR_TEST_URL;
   else process.env.CALENDAR_TEST_URL = originalTestUrl;
+  if (originalLegacyId === undefined) delete process.env.CALENDAR_TEST_LEGACY_ID;
+  else process.env.CALENDAR_TEST_LEGACY_ID = originalLegacyId;
   if (originalArg === undefined) delete process.argv[2];
   else process.argv[2] = originalArg;
   console.log('Disposing ephemeral Miniflare instance…');
