@@ -133,6 +133,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .dialog form > input { margin-bottom: 17px; }
 .date-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .date-fields input { padding: 10px 8px; font-size: 11px; }
+.recurrence-toggle { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 13px; }
+.recurrence-toggle input { width: 16px; height: 16px; accent-color: #bd6749; }
+.recurrence-fields { display: grid; grid-template-columns: 1fr 1fr; align-items: end; gap: 10px; margin-top: 12px; }
+.recurrence-fields label { grid-column: 1 / -1; margin-bottom: -7px; }
+.recurrence-fields input, .recurrence-fields select { width: 100%; min-width: 0; padding: 10px 8px; border: 1px solid #dedbd3; border-radius: 8px; background: white; color: #34332f; font: inherit; }
 .form-hint { margin: 8px 0 17px; color: #99958c; font-size: 10px; line-height: 1.6; }
 .dialog-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 19px; }
 .secondary-button, .danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; border: 1px solid #e6e1d9; border-radius: 9px; padding: 9px 13px; background: white; color: #716e66; font-size: 11px; font-weight: 600; }

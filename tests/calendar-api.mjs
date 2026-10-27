@@ -152,6 +152,7 @@ async function main() {
   noSecretMaterial(restoredRead.data, [secretA]);
   passed('restores the same member identity, color, and rights from its secret');
 
+
   const initialEvent = {
     id: eventId(), title: 'multi-day literal', startDate: '2026-04-10', endDate: '2026-04-12',
   };
@@ -174,6 +175,31 @@ async function main() {
   const memberC = joinC.data.member;
   assert.notEqual(memberC.id, memberA.id, 'same-calendar same-name members must have different IDs');
   assert.notEqual(memberC.color, memberA.color, 'same-calendar same-name members must have different colors');
+
+  const recurringBody = { id: eventId(), title: 'weekly series', startDate: '2026-03-30', endDate: '2026-03-30', recurrence: { freq: 'weekly', until: '2026-04-20', count: 10 } };
+  const recurringCreated = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: recurringBody, cookies: restoredJarA, expectedStatus: 201 });
+  assert.equal(recurringCreated.data.event.repeatFreq, 'weekly');
+  const recurringEvents = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA, expectedStatus: 200 })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.deepEqual(recurringEvents.map((item) => item.startDate), ['2026-03-30', '2026-04-06', '2026-04-13', '2026-04-20']);
+  assert.ok(recurringEvents.every((item) => item.id === `${recurringBody.id}_${item.startDate.replaceAll('-', '')}` && item.endDate === item.startDate && item.version === 1 && item.recurrence.freq === 'weekly'));
+  const recurringRetry = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: recurringBody, cookies: restoredJarA, expectedStatus: 200 });
+  assert.equal(recurringRetry.data.event.id, recurringBody.id);
+  const recurringConflict = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/events`, { body: { ...recurringBody, recurrence: { freq: 'weekly', count: 2 } }, cookies: restoredJarA });
+  assert.equal(recurringConflict.status, 409);
+  const otherRecurringEdit = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'forbidden', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: 1 }, cookies: jarC });
+  assert.equal(otherRecurringEdit.status, 403);
+  const recurringEdited = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringEvents[2].id.replace(/_\d{8}$/, '')}`, { body: { title: 'weekly edited', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: recurringEvents[2].version }, cookies: restoredJarA, expectedStatus: 200 });
+  const afterSeriesEdit = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.ok(afterSeriesEdit.every((item) => item.title === 'weekly edited' && item.version === recurringEdited.data.event.version && item.recurrence?.freq === 'weekly'));
+  const staleOccurrenceEdit = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'stale from another occurrence', startDate: recurringBody.startDate, endDate: recurringBody.endDate, version: 1 }, cookies: restoredJarA });
+  assert.equal(staleOccurrenceEdit.status, 409);
+  const otherRecurringDelete = await request('DELETE', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { version: recurringEdited.data.event.version }, cookies: jarC });
+  assert.equal(otherRecurringDelete.status, 403);
+  const recurrenceRemoved = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${recurringBody.id}`, { body: { title: 'single now', startDate: recurringBody.startDate, endDate: recurringBody.startDate, version: recurringEdited.data.event.version, recurrence: null }, cookies: restoredJarA, expectedStatus: 200 });
+  const afterRemoval = (await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { cookies: restoredJarA })).data.events.filter((item) => item.seriesId === recurringBody.id);
+  assert.deepEqual(afterRemoval.map((item) => item.startDate), [recurringBody.startDate]);
+  assert.equal(afterRemoval[0].version, recurrenceRemoved.data.event.version);
+  passed('creates and expands recurring series, applies series edits, enforces ownership, compares recurrence on retries, and removes recurrence');
   const cPatchA = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${event.id}`, {
     body: { title: 'other member edit', startDate: event.startDate, endDate: event.endDate, version: event.version }, cookies: jarC,
   });
@@ -290,7 +316,7 @@ async function main() {
   assert.equal(literalCreated.data.event.title, malicious);
   passed('stores malicious-looking titles as literal data');
 
-  for (const tracked of [current, race.find((r) => r.status === 200).data.event, concurrentCreateStored[0], literalCreated.data.event]) {
+  for (const tracked of [current, race.find((r) => r.status === 200).data.event, concurrentCreateStored[0], literalCreated.data.event, recurrenceRemoved.data.event]) {
     const deleted = await request('DELETE', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${tracked.id}`, {
       body: { version: tracked.version }, cookies: restoredJarA, expectedStatus: 200,
     });

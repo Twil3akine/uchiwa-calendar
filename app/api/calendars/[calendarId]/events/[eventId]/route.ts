@@ -3,6 +3,7 @@ import { getDb } from "../../../../../../db";
 import { calendarEvents } from "../../../../../../db/schema";
 import { requireMember } from "../../../../../../lib/server/auth";
 import { rateLimit } from "../../../../../../lib/server/security";
+import { normalizeRecurrence } from "../../../../../../lib/recurrence.mjs";
 import { fail, HttpError, json, readJson, requireCalendarId, requireKeys, requireSameOrigin, requiredString, validDate } from "../../../../../../lib/server/http";
 
 type Context = { params: Promise<{ calendarId: string; eventId: string }> };
@@ -26,7 +27,7 @@ export async function PATCH(request: Request, { params }: Context) {
     const { calendarId, eventId } = await params;
     requireCalendarId(calendarId);
     const body = await readJson(request, 4096);
-    requireKeys(body, ["title", "startDate", "endDate", "version"]);
+    requireKeys(body, ["title", "startDate", "endDate", "version", "recurrence"]);
     const title = requiredString(body.title, "予定名", 100);
     const startDate = validDate(body.startDate, "開始");
     const endDate = validDate(body.endDate, "終了");
@@ -35,9 +36,12 @@ export async function PATCH(request: Request, { params }: Context) {
     const member = await requireMember(request, calendarId);
     const previous = await ownedEvent(calendarId, eventId, member.id);
     if (previous.version !== version) throw new HttpError(409, "予定がほかの操作で更新されました。最新の内容を読み込んでください。");
-    const [event] = await getDb().update(calendarEvents).set({ title, startDate, endDate, version: version + 1, updatedAt: sql`CURRENT_TIMESTAMP` }).where(and(eq(calendarEvents.id, eventId), eq(calendarEvents.calendarId, calendarId), eq(calendarEvents.memberId, member.id), eq(calendarEvents.version, version))).returning({ id: calendarEvents.id, memberId: calendarEvents.memberId, title: calendarEvents.title, startDate: calendarEvents.startDate, endDate: calendarEvents.endDate, version: calendarEvents.version });
+    let recurrence;
+    try { recurrence = Object.hasOwn(body, "recurrence") ? normalizeRecurrence(body.recurrence, startDate) : previous.repeatFreq === "weekly" ? { freq: "weekly" as const, until: previous.repeatUntil, count: previous.repeatCount } : null; } catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "繰り返しの規則が正しくありません。"); }
+    if (recurrence && endDate !== startDate) throw new HttpError(400, "繰り返し予定は開始日と終了日を同じ日にしてください。");
+    const [event] = await getDb().update(calendarEvents).set({ title, startDate, endDate, repeatFreq: recurrence?.freq ?? null, repeatUntil: recurrence?.until ?? null, repeatCount: recurrence?.count ?? null, version: version + 1, updatedAt: sql`CURRENT_TIMESTAMP` }).where(and(eq(calendarEvents.id, eventId), eq(calendarEvents.calendarId, calendarId), eq(calendarEvents.memberId, member.id), eq(calendarEvents.version, version))).returning({ id: calendarEvents.id, memberId: calendarEvents.memberId, title: calendarEvents.title, startDate: calendarEvents.startDate, endDate: calendarEvents.endDate, version: calendarEvents.version });
     if (!event) throw new HttpError(409, "予定がほかの操作で更新されました。最新の内容を読み込んでください。");
-    return json({ event });
+    return json({ event: { ...event, seriesId: event.id, recurrence } });
   } catch (error) {
     return fail(error);
   }

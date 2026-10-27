@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +10,7 @@ const { Miniflare, convertV4MiniflareOptions } = wranglerRequire('miniflare');
 const esbuild = wranglerRequire('esbuild');
 
 const workerEntry = fileURLToPath(new URL('./api-worker.ts', import.meta.url));
-const migrationPath = new URL('../drizzle/0000_lean_omega_red.sql', import.meta.url);
+const migrationsPath = new URL('../drizzle/', import.meta.url);
 const bundle = await esbuild.build({
   entryPoints: [workerEntry],
   bundle: true,
@@ -40,10 +40,22 @@ const originalArg = process.argv[2];
 
 try {
   const db = await miniflare.getD1Database('DB');
-  const migration = await readFile(migrationPath, 'utf8');
-  const statements = migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean);
-  assert.ok(statements.length >= 3, 'expected D1 migration statements');
-  await db.batch(statements.map((statement) => db.prepare(statement)));
+  const migrationFiles = (await readdir(migrationsPath)).filter((name) => /^\d+_.*\.sql$/.test(name)).sort();
+  assert.ok(migrationFiles.length >= 1, 'expected D1 migration SQL files');
+  for (const [index, file] of migrationFiles.entries()) {
+    if (index === 1) {
+      await db.prepare("INSERT INTO calendars (id, name) VALUES ('legacy-calendar', 'legacy')").run();
+      await db.prepare("INSERT INTO members (member_id, calendar_id, name, secret_hash) VALUES ('legacy-member', 'legacy-calendar', 'legacy', 'legacy-hash')").run();
+      await db.prepare("INSERT INTO calendar_events (id, calendar_id, member_id, title, start_date, end_date) VALUES ('legacy-event', 'legacy-calendar', 'legacy-member', 'legacy', '2026-01-01', '2026-01-01')").run();
+    }
+    const migration = await readFile(new URL(file, migrationsPath), 'utf8');
+    const statements = migration.split(/-->\s*statement-breakpoint/g).map((statement) => statement.trim()).filter(Boolean);
+    await db.batch(statements.map((statement) => db.prepare(statement)));
+    if (index === 1) {
+      const legacy = await db.prepare("SELECT id, repeat_freq, repeat_until, repeat_count FROM calendar_events WHERE id='legacy-event'").first();
+      assert.deepEqual(legacy, { id: 'legacy-event', repeat_freq: null, repeat_until: null, repeat_count: null });
+    }
+  }
 
   globalThis.fetch = async (input, init) => {
     return miniflare.dispatchFetch(input, init);
