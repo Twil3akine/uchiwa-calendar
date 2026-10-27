@@ -90,9 +90,12 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid 
 .member-color { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; }
 .member-muted { opacity: .45; }
 .no-members { color: #aaa69c; font-size: 10px; }
-.app-footer { display: flex; justify-content: space-between; align-items: center; padding: 18px 2px 0; color: #aaa69c; font-size: 10px; }
+.app-footer { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; padding: 18px 2px 0; color: #aaa69c; font-size: 10px; }
 .footer-sep { padding: 0 5px; color: #d0cbc2; }
-.app-footer button { display: inline-flex; align-items: center; gap: 6px; color: #8c8981; border: 0; background: transparent; font-size: 10px; }
+.footer-actions { display: flex; align-items: center; gap: 16px; }
+.app-footer button, .app-footer a, .welcome-help { display: inline-flex; align-items: center; gap: 6px; color: #706c64; border: 0; background: transparent; font-size: 12px; text-decoration: none; }
+.app-footer button:hover, .app-footer a:hover, .welcome-help:hover { color: var(--terra-dark); text-decoration: underline; text-underline-offset: 4px; }
+.welcome-help { margin-top: 18px; }
 .error-banner { display: flex; justify-content: space-between; padding: 10px 13px; margin: -7px 0 15px; border: 1px solid #edcbbf; background: #fff8f5; color: #9d4c35; border-radius: 9px; font-size: 12px; }
 .error-banner button { border: 0; background: transparent; color: inherit; text-decoration: underline; }
 
