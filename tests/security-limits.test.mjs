@@ -58,6 +58,24 @@ test('missing rate-limit bindings fail closed before touching the database',asyn
     assert.equal(res.status,503);
   }finally{await mf.dispose();}
 });
+test('calendar feeds share the read limiter and report 429 with Retry-After',async()=>{
+  const f=await fixture();try {
+    const path=`/api/calendars/${f.cid}/feed`;
+    let last;
+    for(let i=0;i<122;i++) last=await f.request(path,'GET',undefined,undefined,'203.0.113.91');
+    assert.equal(last.status,429);
+    assert.equal(last.headers.get('retry-after'),'60');
+    assert.match(await last.text(),/操作が多すぎます/);
+  }finally{await f.mf.dispose();}
+});
+test('missing READ_LIMIT binding returns 503 for a feed',async()=>{
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:source.outputFiles[0].text,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],cf:false}));
+  try {
+    const res=await mf.dispatchFetch('https://test.local/api/calendars/00000000-0000-0000-0000-000000000000/feed');
+    assert.equal(res.status,503);
+    assert.match(await res.text(),/アクセス制限の設定がありません/);
+  }finally{await mf.dispose();}
+});
 test('calendar quota is atomic under concurrent inserts',async()=>{
   const f=await fixture();try {
     await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4998) INSERT INTO calendars(id,name) SELECT printf('seed-%d',x),'seed' FROM n").run();

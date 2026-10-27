@@ -1,5 +1,6 @@
 import { POST as createCalendar } from "../app/api/calendars/route";
 import { GET as getCalendar } from "../app/api/calendars/[calendarId]/route";
+import { GET as getCalendarFeed } from "../app/api/calendars/[calendarId]/feed/route";
 import { PATCH as updateMember, POST as joinCalendar } from "../app/api/calendars/[calendarId]/members/route";
 import { POST as createSession, PATCH as rotateSession } from "../app/api/calendars/[calendarId]/session/route";
 import { POST as createEvent } from "../app/api/calendars/[calendarId]/events/route";
@@ -12,6 +13,8 @@ function route(method: string, pathname: string) {
   if (pathname === "/api/calendars" && method === "POST") return { handler: createCalendar, params: {} };
   const calendarMatch = pathname.match(/^\/api\/calendars\/([^/]+)$/);
   if (calendarMatch && method === "GET") return { handler: getCalendar, params: { calendarId: decodeURIComponent(calendarMatch[1]) } };
+  const feedMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/feed$/);
+  if (feedMatch && method === "GET") return { handler: getCalendarFeed, params: { calendarId: decodeURIComponent(feedMatch[1]) } };
   const membersMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/members$/);
   if (membersMatch && method === "POST") return { handler: joinCalendar, params: { calendarId: decodeURIComponent(membersMatch[1]) } };
   if (membersMatch && method === "PATCH") return { handler: updateMember, params: { calendarId: decodeURIComponent(membersMatch[1]) } };

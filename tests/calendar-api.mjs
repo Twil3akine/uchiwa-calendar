@@ -68,6 +68,15 @@ async function request(method, path, { body, cookies, expectedStatus, originHead
   return { status: response.status, data, raw };
 }
 
+async function feed(calendarId, { cookie, originHeader } = {}) {
+  const headers = {};
+  if (cookie) headers.Cookie = cookie;
+  if (originHeader !== undefined && originHeader !== null) headers.Origin = originHeader;
+  const prefix = base.pathname === '/' ? '' : base.pathname;
+  const response = await fetch(new URL(`${prefix}/api/calendars/${encodeURIComponent(calendarId)}/feed`, base.origin), { headers });
+  return { status: response.status, contentType: response.headers.get('content-type'), headers: response.headers, body: await response.text() };
+}
+
 const ok = (result, message) => assert.ok(result.status >= 200 && result.status < 300, `${message}: HTTP ${result.status} ${result.raw}`);
 const eventId = () => randomUUID();
 const checks = [];
@@ -107,6 +116,18 @@ async function main() {
   assert.ok([401, 403].includes(anonymousWrite.status), `anonymous event write should be denied, got ${anonymousWrite.status}`);
   passed('allows anonymous calendar read and denies anonymous writes');
 
+  const emptyFeed = await feed(calendarA.id);
+  assert.equal(emptyFeed.status, 200);
+  assert.match(emptyFeed.contentType, /^text\/calendar;\s*charset=utf-8/i);
+  assert.equal(emptyFeed.headers.get('cache-control'), 'no-store');
+  assert.equal(emptyFeed.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(emptyFeed.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(emptyFeed.body, /BEGIN:VCALENDAR\r\n/);
+  assert.doesNotMatch(emptyFeed.body, /BEGIN:VEVENT/);
+  const invalidCookieFeed = await feed(calendarA.id, { cookie: 'calendar_session_invalid=not-a-secret' });
+  assert.equal(invalidCookieFeed.status, 200, 'invalid cookies must not block anonymous feed access');
+  passed('serves an empty feed anonymously without Cookie or Origin and sets private response headers');
+
   const secretA = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const secretB = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const secretC = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
@@ -140,6 +161,10 @@ async function main() {
   assert.equal(joinRetry.data.member.color, memberA.color);
   passed('creates distinct same-name members, idempotently retries joins, and sets per-calendar cookies');
 
+  const bOnlyEvent = { id: eventId(), title: 'B calendar only', startDate: '2026-04-20', endDate: '2026-04-20' };
+  const bEvent = await request('POST', `/api/calendars/${encodeURIComponent(calendarB.id)}/events`, { body: bOnlyEvent, cookies: jarB });
+  ok(bEvent, 'create event in calendar B');
+
   const restoredJarA = jar();
   const restored = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/session`, {
     body: { secret: secretA }, cookies: restoredJarA, expectedStatus: 200,
@@ -166,6 +191,18 @@ async function main() {
   assert.equal(event.endDate, initialEvent.endDate);
   assert.equal(event.version, 1);
   assert.equal(event.title, initialEvent.title);
+  let feedA = await feed(calendarA.id);
+  assert.equal(feedA.status, 200);
+  assert.match(feedA.body, new RegExp(`UID:${event.id}@uchiwa-calendar`));
+  assert.match(feedA.body, /SUMMARY:multi-day literal/);
+  assert.match(feedA.body, /DESCRIPTION:Same name/);
+  assert.match(feedA.body, /DTSTART;VALUE=DATE:20260410/);
+  assert.match(feedA.body, /DTEND;VALUE=DATE:20260413/);
+  assert.doesNotMatch(feedA.body, /B calendar only/);
+  assert.doesNotMatch(feedA.body, new RegExp(secretA));
+  assert.doesNotMatch(feedA.body, new RegExp(secretB));
+  assert.doesNotMatch(feedA.body, /secret_hash|secretHash|tokenHash/i);
+  passed('exports only this calendar’s public event details and never exposes member secrets');
 
   const joinC = await request('POST', `/api/calendars/${encodeURIComponent(calendarA.id)}/members`, {
     body: { name: 'Same name', secret: secretC }, cookies: jarC,
@@ -301,6 +338,12 @@ async function main() {
   });
   const current = updated.data.event;
   assert.equal(current.version, event.version + 1);
+  feedA = await feed(calendarA.id, { cookie: `calendar_session_${calendarA.id}=invalid` });
+  assert.match(feedA.body, new RegExp(`UID:${event.id}@uchiwa-calendar`));
+  assert.match(feedA.body, /SUMMARY:updated literal/);
+  assert.match(feedA.body, /DTSTART;VALUE=DATE:20260411/);
+  assert.match(feedA.body, /DTEND;VALUE=DATE:20260414/);
+  passed('keeps event UID stable while updating feed contents after edits');
   const staleUpdate = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/events/${event.id}`, {
     body: { title: 'stale overwrite', startDate: event.startDate, endDate: event.endDate, version: event.version }, cookies: restoredJarA,
   });
@@ -352,6 +395,16 @@ async function main() {
     });
     assert.equal(deleted.data.ok, true);
   }
+  const finalFeed = await feed(calendarA.id);
+  for (const tracked of [current, race.find((r) => r.status === 200).data.event, concurrentCreateStored[0], literalCreated.data.event]) {
+    assert.doesNotMatch(finalFeed.body, new RegExp(`UID:${tracked.id}@uchiwa-calendar`));
+  }
+  const missingFeed = await feed('00000000-0000-0000-0000-000000000000');
+  assert.equal(missingFeed.status, 404);
+  assert.deepEqual(JSON.parse(missingFeed.body), { error: 'カレンダーが見つかりません。' });
+  const feedB = await feed(calendarB.id);
+  assert.match(feedB.body, /SUMMARY:B calendar only/);
+  assert.doesNotMatch(feedB.body, new RegExp(`UID:${event.id}@uchiwa-calendar`));
   passed('cleans up all test events');
 
   const rotatedSecret = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
