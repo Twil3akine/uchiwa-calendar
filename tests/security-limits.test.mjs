@@ -36,11 +36,44 @@ test('native rate limiter rejects excessive anonymous creation with 429 and Retr
     assert.equal((await f.request('/api/calendars','POST',{name:'another'},undefined,'203.0.113.2')).status,201);
   }finally{await f.mf.dispose();}
 });
+test('member color updates are rate limited without applying the rejected update',async()=>{
+  const f=await fixture();try {
+    const colors=['#2563eb','#db2777','#059669','#d97706','#7c3aed','#0891b2','#dc2626','#4f46e5'];
+    let lastColor=f.member.color;let limited;
+    for(let i=0;i<65;i++) {
+      const color=colors[i%colors.length];
+      const response=await f.request(`/api/calendars/${f.cid}/members`,'PATCH',{color},f.cookie);
+      if(response.status===429){limited=response;break;}
+      assert.equal(response.status,200);lastColor=color;
+    }
+    assert.ok(limited,'expected the write limit to reject a color update');
+    assert.equal(limited.headers.get('retry-after'),'60');
+    assert.equal((await f.db.prepare('SELECT color FROM members WHERE member_id=?').bind(f.member.id).first()).color,lastColor);
+  }finally{await f.mf.dispose();}
+});
 test('missing rate-limit bindings fail closed before touching the database',async()=>{
   const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:source.outputFiles[0].text,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],cf:false}));
   try {
     const res=await mf.dispatchFetch('https://test.local/api/calendars',{method:'POST',headers:{Origin:'https://test.local','Content-Type':'application/json'},body:JSON.stringify({name:'blocked'})});
     assert.equal(res.status,503);
+  }finally{await mf.dispose();}
+});
+test('calendar feeds share the read limiter and report 429 with Retry-After',async()=>{
+  const f=await fixture();try {
+    const path=`/api/calendars/${f.cid}/feed`;
+    let last;
+    for(let i=0;i<122;i++) last=await f.request(path,'GET',undefined,undefined,'203.0.113.91');
+    assert.equal(last.status,429);
+    assert.equal(last.headers.get('retry-after'),'60');
+    assert.match(await last.text(),/操作が多すぎます/);
+  }finally{await f.mf.dispose();}
+});
+test('missing READ_LIMIT binding returns 503 for a feed',async()=>{
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:source.outputFiles[0].text,compatibilityDate:'2026-05-15',compatibilityFlags:['nodejs_compat'],cf:false}));
+  try {
+    const res=await mf.dispatchFetch('https://test.local/api/calendars/00000000-0000-0000-0000-000000000000/feed');
+    assert.equal(res.status,503);
+    assert.match(await res.text(),/アクセス制限の設定がありません/);
   }finally{await mf.dispose();}
 });
 test('calendar quota is atomic under concurrent inserts',async()=>{

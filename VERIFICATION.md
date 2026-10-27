@@ -38,6 +38,20 @@ curl -i http://127.0.0.1:8787/api/calendars/<calendarId>/mcp \
 
 管理されたChromeプレビューで、カレンダー作成、名前による参加、予定登録、予定名の編集、終了日の変更を操作しました。複数日にわたる表示も確認しました。
 
+この記録時点では、新しいCSPを適用したビルド済みWorkerのブラウザー確認は未実施です。検証担当者はHTTPSの本番相当プレビュー（またはHTTPSで配信するビルド済みWorker）を使い、ブラウザー名・完全なバージョン・OS・検証日を下の記録欄へ追記してください。HTTPの通常の開発サーバーでは代用しません。
+
+### CSP確認手順
+
+1. 開発者ツールのConsoleとNetworkを開き、トップページを読み込みます。最終応答の `Content-Security-Policy` が `frame-ancestors 'none'`、`object-src 'none'`、`base-uri 'self'`、`connect-src 'self'`、`form-action 'self'`、`worker-src 'self'`、`manifest-src 'self'`、`media-src 'self'`、`img-src 'self'`、`font-src 'self'`、`style-src 'self' 'unsafe-inline'` を含み、`default-src` を含まないことを確認します。JS/CSS・OG画像など同一originのリソースが正常に取得されることも確認します。
+2. ConsoleにCSP違反がない状態でハイドレーション完了を確認し、カレンダー作成、参加、予定登録・編集・削除、月移動、複数日と重複予定の表示、共有URLの直接アクセスと再読み込み、個人リンクでの権限復元を行います。各操作後にConsoleとNetworkのCSP違反・失敗リクエストを確認します。
+3. Consoleから同一origin外への `fetch` を試し、`connect-src 'self'` によって拒否されることを確認します。フォーム送信、Worker/Manifest/Media/Image/Fontの許可元もNetwork上で確認します。意図しない外部リソースをアプリに追加していないことを確認します。
+4. `script-src` は現在未設定なので、この版では未許可scriptの拒否を確認できません。script-src ハッシュ方式を導入したビルドでは、許可済みのインラインscriptが動作することと、未許可のインラインscriptおよび同一origin外scriptが拒否されることを追加確認してください。現状、script-src制御をブラウザーで検証済みと記録しないでください。
+
+| ブラウザー | バージョン | OS | 検証日 | 結果 |
+| --- | --- | --- | --- | --- |
+| 未実施 | — | — | — | ビルド済みWorkerのCSP確認待ち |
+| 2026-10-27 | （自動確認を試行） | — | — | ビルド済みWorkerをローカルで起動し、応答ヘッダーと指令構成、security-build-smoke（D1・Cookie・再発行を含む）は確認済み。ブラウザー実機からの確認は、確認用ブラウザーからローカルサーバーへ到達できず未実施のまま。本番相当プレビューでの実施が残る |
+
 HTTPの開発プレビューでは`crypto.randomUUID`が使えないため、`crypto.getRandomValues`によるUUIDv4生成を補っています。日付入力は`input`イベントでも状態を更新し、日付を変更して保存した際に反映されることを確認しました。
 
 ## 範囲

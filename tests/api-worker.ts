@@ -1,6 +1,7 @@
 import { POST as createCalendar } from "../app/api/calendars/route";
 import { GET as getCalendar } from "../app/api/calendars/[calendarId]/route";
-import { POST as joinCalendar } from "../app/api/calendars/[calendarId]/members/route";
+import { GET as getCalendarFeed } from "../app/api/calendars/[calendarId]/feed/route";
+import { PATCH as updateMember, POST as joinCalendar } from "../app/api/calendars/[calendarId]/members/route";
 import { POST as createSession, PATCH as rotateSession } from "../app/api/calendars/[calendarId]/session/route";
 import { POST as createEvent } from "../app/api/calendars/[calendarId]/events/route";
 import { GET as getMcp, POST as postMcp } from "../app/api/calendars/[calendarId]/mcp/route";
@@ -13,8 +14,11 @@ function route(method: string, pathname: string) {
   if (pathname === "/api/calendars" && method === "POST") return { handler: createCalendar, params: {} };
   const calendarMatch = pathname.match(/^\/api\/calendars\/([^/]+)$/);
   if (calendarMatch && method === "GET") return { handler: getCalendar, params: { calendarId: decodeURIComponent(calendarMatch[1]) } };
+  const feedMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/feed$/);
+  if (feedMatch && method === "GET") return { handler: getCalendarFeed, params: { calendarId: decodeURIComponent(feedMatch[1]) } };
   const membersMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/members$/);
   if (membersMatch && method === "POST") return { handler: joinCalendar, params: { calendarId: decodeURIComponent(membersMatch[1]) } };
+  if (membersMatch && method === "PATCH") return { handler: updateMember, params: { calendarId: decodeURIComponent(membersMatch[1]) } };
   const sessionMatch = pathname.match(/^\/api\/calendars\/([^/]+)\/session$/);
   if (sessionMatch && method === "POST") return { handler: createSession, params: { calendarId: decodeURIComponent(sessionMatch[1]) } };
   if (sessionMatch && method === "PATCH") return { handler: rotateSession, params: { calendarId: decodeURIComponent(sessionMatch[1]) } };
