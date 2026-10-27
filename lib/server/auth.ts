@@ -16,6 +16,13 @@ export function validateSecret(value: unknown) {
   return value;
 }
 
+export function validateViewKey(value: unknown) {
+  if (typeof value !== "string" || value.length < 32 || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new HttpError(400, "閲覧キーが正しくありません。");
+  }
+  return value;
+}
+
 export async function findMemberBySecret(calendarId: string, secret: string) {
   const db = getDb();
   const hash = await hashSecret(secret);

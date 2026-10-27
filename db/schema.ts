@@ -4,6 +4,7 @@ import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqli
 export const calendars = sqliteTable("calendars", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
+  viewKeyHash: text("view_key_hash"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

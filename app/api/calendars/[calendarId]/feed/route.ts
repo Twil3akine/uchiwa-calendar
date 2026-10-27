@@ -2,6 +2,7 @@ import { asc, eq } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { calendarEvents, calendars, members } from "../../../../../db/schema";
 import { generateIcalFeed } from "../../../../../lib/ical";
+import { hashSecret, validateViewKey } from "../../../../../lib/server/auth";
 import { fail, HttpError, requireCalendarId } from "../../../../../lib/server/http";
 import { rateLimit } from "../../../../../lib/server/security";
 
@@ -13,8 +14,14 @@ export async function GET(request: Request, { params }: Context) {
     requireCalendarId(calendarId);
     await rateLimit(request, "read");
     const db = getDb();
-    const [calendar] = await db.select({ id: calendars.id, name: calendars.name }).from(calendars).where(eq(calendars.id, calendarId)).limit(1);
+    const [calendar] = await db.select({ id: calendars.id, name: calendars.name, viewKeyHash: calendars.viewKeyHash }).from(calendars).where(eq(calendars.id, calendarId)).limit(1);
     if (!calendar) throw new HttpError(404, "カレンダーが見つかりません。");
+    if (calendar.viewKeyHash !== null) {
+      const suppliedKey = new URL(request.url).searchParams.get("k");
+      if (!suppliedKey) throw new HttpError(404, "カレンダーが見つかりません。");
+      try { validateViewKey(suppliedKey); } catch { throw new HttpError(404, "カレンダーが見つかりません。"); }
+      if (await hashSecret(suppliedKey) !== calendar.viewKeyHash) throw new HttpError(404, "カレンダーが見つかりません。");
+    }
     const rows = await db.select({
       id: calendarEvents.id,
       title: calendarEvents.title,

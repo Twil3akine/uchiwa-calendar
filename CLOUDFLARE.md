@@ -42,6 +42,22 @@ node scripts/cloudflare-update.mjs
 
 `drizzle/`のSQLが適用済みの状態と変わった場合は、安全のため公開を停止します。データベースの形式変更は、既存データを保持する移行手順を確認してから進めてください。公開を通すために照合情報だけを書き換えないでください。
 
+## 共有キー列の本番反映
+
+共有URL再発行のコードを公開する前に、承認された本番変更として次の順に実施します。今回の変更では本番D1への適用・公開は行いません。SQL適用中は新旧コードの併存があり得ます。旧コードで新規作成されたカレンダーは`view_key_hash`がNULLの従来モードとなり、参加メンバーが新コードの設定から初回再発行するとキー保護へ切り替わります。
+
+1. 対象の本番D1とバックアップを確認し、追加SQLだけを適用します。
+
+   ```sh
+   npx wrangler d1 execute <production-database-name> --remote --file=drizzle/0001_blue_wild_child.sql
+   ```
+
+2. `PRAGMA table_info(calendars);`で`view_key_hash`がNULL許容で追加されたこと、既存行の`view_key_hash`がNULLであること、カレンダー・参加者・予定の件数が適用前と一致することを確認します。失敗や件数差があれば公開へ進みません。
+3. 適用したSQLのSHA-256を確認し、`cloudflare.production.json`の`migrations`へ`drizzle/0001_blue_wild_child.sql`の指紋を追加します。SQLとDBの状態を照合してから設定を更新します。指紋だけを先に更新してはいけません。
+4. 指紋照合を含む通常のビルド・公開を行います。
+
+コードをマージしただけでは本番に反映されません。SQLは既存データを再取り込みせず、差し戻し時も列を削除しません。移行期間中に旧コードへ戻って作られたカレンダーはNULLのままなので、復旧後に初回再発行で保護を有効化できます。
+
 ## GitHub Actionsによる自動更新
 
 `.github/workflows/cloudflare.yml`で、PRとmasterへのpush時に単体テスト、一時D1を使ったAPIテスト、ビルド、本番設定の照合を実行します。成功したmasterだけをCloudflareへ公開します。Actionsタブからの手動実行にも対応しています。

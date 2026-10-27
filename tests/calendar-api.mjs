@@ -42,8 +42,13 @@ function absorbCookies(response, targetJar) {
   }
 }
 
-async function request(method, path, { body, rawBody, headers: extraHeaders, cookies, expectedStatus, originHeader = origin, ip = '203.0.113.1' } = {}) {
+const viewKeys = new Map();
+
+async function request(method, path, { body, rawBody, headers: extraHeaders, cookies, expectedStatus, originHeader = origin, ip = '203.0.113.1', withoutViewKey = false, viewKey } = {}) {
   const headers = { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip };
+  const calendarId = path.match(/^\/api\/calendars\/([^/]+)/)?.[1];
+  const key = withoutViewKey ? undefined : viewKey || viewKeys.get(decodeURIComponent(calendarId || ''));
+  if (key) headers['X-View-Key'] = key;
   Object.assign(headers, extraHeaders || {});
   if (originHeader !== null) headers.Origin = originHeader;
   if (cookies?.cookies.size) {
@@ -69,12 +74,15 @@ async function request(method, path, { body, rawBody, headers: extraHeaders, coo
   return { status: response.status, data, raw };
 }
 
-async function feed(calendarId, { cookie, originHeader } = {}) {
-  const headers = {};
+async function feed(calendarId, { cookie, originHeader, withoutViewKey = false, viewKey } = {}) {
+  const headers = { 'CF-Connecting-IP': '203.0.113.1' };
   if (cookie) headers.Cookie = cookie;
   if (originHeader !== undefined && originHeader !== null) headers.Origin = originHeader;
   const prefix = base.pathname === '/' ? '' : base.pathname;
-  const response = await fetch(new URL(`${prefix}/api/calendars/${encodeURIComponent(calendarId)}/feed`, base.origin), { headers });
+  const key = withoutViewKey ? undefined : viewKey || viewKeys.get(calendarId);
+  const url = new URL(`${prefix}/api/calendars/${encodeURIComponent(calendarId)}/feed`, base.origin);
+  if (key) url.searchParams.set('k', key);
+  const response = await fetch(url, { headers });
   return { status: response.status, contentType: response.headers.get('content-type'), headers: response.headers, body: await response.text() };
 }
 
@@ -94,11 +102,13 @@ function noSecretMaterial(value, secrets) {
 
 async function main() {
   const anonymous = jar();
+  const viewKeyA = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const viewKeyB = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const calendarAResponse = await request('POST', '/api/calendars', {
-    body: { name: `A-${randomUUID()}` },
+    body: { name: `A-${randomUUID()}`, viewKey: viewKeyA },
   });
   const calendarBResponse = await request('POST', '/api/calendars', {
-    body: { name: `B-${randomUUID()}` },
+    body: { name: `B-${randomUUID()}`, viewKey: viewKeyB },
   });
   ok(calendarAResponse, 'create calendar A');
   ok(calendarBResponse, 'create calendar B');
@@ -106,8 +116,10 @@ async function main() {
   const calendarB = calendarBResponse.data.calendar;
   assert.ok(calendarA?.id && calendarB?.id);
   assert.notEqual(calendarA.id, calendarB.id);
+  viewKeys.set(calendarA.id, viewKeyA); viewKeys.set(calendarB.id, viewKeyB);
   passed('creates two independent calendars');
 
+  await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { expectedStatus: 404, withoutViewKey: true });
   const readA = await request('GET', `/api/calendars/${encodeURIComponent(calendarA.id)}`, { expectedStatus: 200 });
   assert.equal(readA.data.me, null);
   assert.doesNotMatch(JSON.stringify(readA.data), /"(?:secret|secretHash|secret_hash|tokenHash|token_hash)"\s*:/i);
@@ -115,8 +127,12 @@ async function main() {
     body: { id: eventId(), title: 'anonymous', startDate: '2026-04-01', endDate: '2026-04-01' },
   });
   assert.ok([401, 403].includes(anonymousWrite.status), `anonymous event write should be denied, got ${anonymousWrite.status}`);
-  passed('allows anonymous calendar read and denies anonymous writes');
+  passed('requires a valid shared key for anonymous calendar reads and denies anonymous writes');
 
+  const missingKeyFeed = await feed(calendarA.id, { withoutViewKey: true });
+  assert.equal(missingKeyFeed.status, 404, 'protected feeds reject requests without a view key');
+  const oldKeyFeed = await feed(calendarA.id, { viewKey: 'x'.repeat(43) });
+  assert.equal(oldKeyFeed.status, 404, 'protected feeds reject stale or incorrect view keys');
   const emptyFeed = await feed(calendarA.id);
   assert.equal(emptyFeed.status, 200);
   assert.match(emptyFeed.contentType, /^text\/calendar;\s*charset=utf-8/i);
@@ -125,9 +141,12 @@ async function main() {
   assert.equal(emptyFeed.headers.get('x-content-type-options'), 'nosniff');
   assert.match(emptyFeed.body, /BEGIN:VCALENDAR\r\n/);
   assert.doesNotMatch(emptyFeed.body, /BEGIN:VEVENT/);
-  const invalidCookieFeed = await feed(calendarA.id, { cookie: 'calendar_session_invalid=not-a-secret' });
-  assert.equal(invalidCookieFeed.status, 200, 'invalid cookies must not block anonymous feed access');
-  passed('serves an empty feed anonymously without Cookie or Origin and sets private response headers');
+  const invalidCookieFeed = await feed(calendarA.id, { cookie: 'calendar_session_invalid=not-a-secret', withoutViewKey: true });
+  assert.equal(invalidCookieFeed.status, 404, 'cookies do not bypass view-key protection');
+  const legacyFeedId = process.env.CALENDAR_TEST_LEGACY_ID;
+  assert.ok(legacyFeedId, 'isolated test runner must seed a legacy calendar');
+  assert.equal((await feed(legacyFeedId)).status, 200, 'legacy calendars without a view key retain anonymous feed compatibility');
+  passed('protects keyed iCalendar feeds and preserves legacy feeds with no view key');
 
   const secretA = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
   const secretB = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
@@ -149,6 +168,8 @@ async function main() {
   const memberB = joinB.data.member;
   assert.ok(memberA?.id && memberA?.name && memberA?.color);
   assert.ok(memberB?.id && memberB?.name && memberB?.color);
+  const memberCookie = [...jarA.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+  assert.equal((await feed(calendarA.id, { cookie: memberCookie, withoutViewKey: true })).status, 404, 'member cookies do not replace the feed URL key');
   assert.notEqual(memberA.id, memberB.id, 'same names must not identify the same person');
   noSecretMaterial(joinA.data, [secretA]);
   noSecretMaterial(joinB.data, [secretB]);
@@ -233,7 +254,19 @@ async function main() {
   assert.doesNotMatch(feedA.body, new RegExp(secretA));
   assert.doesNotMatch(feedA.body, new RegExp(secretB));
   assert.doesNotMatch(feedA.body, /secret_hash|secretHash|tokenHash/i);
-  passed('exports only this calendar’s public event details and never exposes member secrets');
+  const rotatedViewKey = Buffer.from(randomUUID() + randomUUID()).toString('base64url').slice(0, 43);
+  const shareRotation = await request('PATCH', `/api/calendars/${encodeURIComponent(calendarA.id)}/share`, {
+    body: { confirm: true, key: rotatedViewKey, expectedKey: viewKeyA }, cookies: restoredJarA, expectedStatus: 200,
+  });
+  assert.equal(shareRotation.data.ok, true);
+  assert.equal((await feed(calendarA.id, { viewKey: viewKeyA })).status, 404, 'share-key rotation invalidates old feed URLs');
+  assert.equal((await feed(calendarA.id, { withoutViewKey: true })).status, 404, 'rotated feed still rejects missing keys');
+  viewKeys.set(calendarA.id, rotatedViewKey);
+  const rotatedFeed = await feed(calendarA.id);
+  assert.equal(rotatedFeed.status, 200);
+  assert.match(rotatedFeed.body, new RegExp(`UID:${event.id}@uchiwa-calendar`));
+  assert.equal((await mcp({ jsonrpc: '2.0', id: 15, method: 'tools/list' })).status, 200, 'MCP Bearer authentication remains independent of shared-key rotation');
+  passed('exports protected feed details and revokes the old subscription URL after share-key rotation');
 
   const mcpList = await mcp({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'list_events', arguments: { from: '2026-04-11', to: '2026-04-11' } } });
   const mcpListedEvents = mcpList.data.result.structuredContent.events;

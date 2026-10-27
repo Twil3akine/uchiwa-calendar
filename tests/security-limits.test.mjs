@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { layoutWeek } from '../lib/calendar-layout.ts';
 
@@ -14,10 +15,12 @@ export async function fixture() {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: source.outputFiles[0].text, compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], cf: false,
     ratelimits: Object.fromEntries([['CREATE_LIMIT',5],['WRITE_LIMIT',60],['READ_LIMIT',120]].map(([name,limit],i)=>[name,{namespace_id:String(913421+i),simple:{limit,period:60}}])) }));
   const db = await mf.getD1Database('DB');
-  const sql = await readFile(new URL('../drizzle/0000_lean_omega_red.sql', import.meta.url), 'utf8');
-  await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
-  async function request(path, method='GET', body, cookie, ip='203.0.113.1') {
-    return mf.dispatchFetch('https://test.local'+path,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':ip,...(cookie?{Cookie:cookie}:{})},...(body?{body:JSON.stringify(body)}:{})});
+  const dir = new URL('../drizzle/', import.meta.url);
+  const files = (await readdir(dir)).filter((file) => file.endsWith('.sql')).sort();
+  const statements = (await Promise.all(files.map((file) => readFile(new URL(file, dir), 'utf8')))).flatMap(sql => sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean));
+  await db.batch(statements.map(s=>db.prepare(s)));
+  async function request(path, method='GET', body, cookie, ip='203.0.113.1', viewKey) {
+    return mf.dispatchFetch('https://test.local'+path,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':ip,...(cookie?{Cookie:cookie}:{}),...(viewKey?{'X-View-Key':viewKey}:{})},...(body?{body:JSON.stringify(body)}:{})});
   }
   const cid=crypto.randomUUID();
   await db.prepare('INSERT INTO calendars (id,name) VALUES (?,?)').bind(cid,'security fixture').run();
@@ -30,10 +33,10 @@ export async function fixture() {
 
 test('native rate limiter rejects excessive anonymous creation with 429 and Retry-After',async()=>{
   const f=await fixture();try {
-    const results=[];for(let i=0;i<7;i++)results.push(await f.request('/api/calendars','POST',{name:'test'}));
+    const results=[];for(let i=0;i<7;i++)results.push(await f.request('/api/calendars','POST',{name:'test',viewKey:'a'.repeat(43)}));
     assert.equal(results[0].status,201);assert.equal(results.at(-1).status,429);
     assert.equal(results.at(-1).headers.get('retry-after'),'60');
-    assert.equal((await f.request('/api/calendars','POST',{name:'another'},undefined,'203.0.113.2')).status,201);
+    assert.equal((await f.request('/api/calendars','POST',{name:'another',viewKey:'a'.repeat(43)},undefined,'203.0.113.2')).status,201);
   }finally{await f.mf.dispose();}
 });
 test('member color updates are rate limited without applying the rejected update',async()=>{
@@ -79,7 +82,7 @@ test('missing READ_LIMIT binding returns 503 for a feed',async()=>{
 test('calendar quota is atomic under concurrent inserts',async()=>{
   const f=await fixture();try {
     await f.db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<4998) INSERT INTO calendars(id,name) SELECT printf('seed-%d',x),'seed' FROM n").run();
-    const res=await Promise.all([f.request('/api/calendars','POST',{name:'a'}),f.request('/api/calendars','POST',{name:'b'})]);
+    const res=await Promise.all([f.request('/api/calendars','POST',{name:'a',viewKey:'a'.repeat(43)}),f.request('/api/calendars','POST',{name:'b',viewKey:'b'.repeat(43)})]);
     assert.deepEqual(res.map(r=>r.status).sort(),[201,409]);
     assert.equal((await f.db.prepare('SELECT COUNT(*) AS n FROM calendars').first()).n,5000);
   }finally{await f.mf.dispose();}
@@ -156,4 +159,38 @@ test('competing rotations have only one winner and never revive an old key',asyn
     assert.equal((await f.request(base,'POST',{secret:winner.secret})).status,200);
     assert.equal((await f.request(base,'POST',{secret:'a'.repeat(43)})).status,401);
   }finally{await f.mf.dispose();}
+});
+
+test('share keys gate anonymous read and join, rotate with optimistic comparison, and leave members intact',async()=>{
+  const f=await fixture();
+  try {
+    const base=`/api/calendars/${f.cid}`;
+    const oldKey='v'.repeat(43), nextKey='w'.repeat(43);
+    await f.db.prepare('UPDATE calendars SET view_key_hash=? WHERE id=?').bind(createHash('sha256').update(oldKey).digest('hex'),f.cid).run();
+    assert.equal((await f.request(base)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1','x'.repeat(43))).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',oldKey)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,f.cookie)).status,200);
+    assert.equal((await f.request(base+'/events','POST',{id:crypto.randomUUID(),title:'key is not a session',startDate:'2026-10-26',endDate:'2026-10-26'},undefined,'203.0.113.1',oldKey)).status,401);
+    assert.equal((await f.request(base+'/share','PATCH',{confirm:true,key:nextKey},undefined,'203.0.113.1',oldKey)).status,401);
+    const rotated=await f.request(base+'/share','PATCH',{confirm:true,key:nextKey,expectedKey:oldKey},f.cookie,undefined,oldKey);
+    assert.equal(rotated.status,200);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',oldKey)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',nextKey)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,f.cookie)).status,200);
+    assert.equal((await f.request(base+'/members','POST',{name:'old key',secret:'b'.repeat(43)},undefined,'203.0.113.1',oldKey)).status,404);
+    assert.equal((await f.request(base+'/members','POST',{name:'new key',secret:'c'.repeat(43)},undefined,'203.0.113.1',nextKey)).status,201);
+    const contenders=await Promise.all(['d','e'].map(k=>f.request(base+'/share','PATCH',{confirm:true,key:k.repeat(43),expectedKey:nextKey},f.cookie,undefined,nextKey)));
+    assert.deepEqual(contenders.map(r=>r.status).sort(),[200,409]);
+  } finally { await f.mf.dispose(); }
+});
+
+test('first share rotation protects a legacy calendar without an expected key',async()=>{
+  const f=await fixture();
+  try {
+    const base=`/api/calendars/${f.cid}`, key='z'.repeat(43);
+    assert.equal((await f.request(base+'/share','PATCH',{confirm:true,key},f.cookie)).status,200);
+    assert.equal((await f.request(base,'GET',undefined,undefined)).status,404);
+    assert.equal((await f.request(base,'GET',undefined,undefined,'203.0.113.1',key)).status,200);
+  } finally { await f.mf.dispose(); }
 });

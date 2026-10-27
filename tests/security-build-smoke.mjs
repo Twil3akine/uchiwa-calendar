@@ -43,8 +43,11 @@ function inlineScriptHashes(html) {
 }
 try {
   const db=await mf.getD1Database('DB');
-  const sql=await readFile('drizzle/0000_lean_omega_red.sql','utf8');
-  await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
+  const migrationFiles=(await readdir('drizzle')).filter(file=>file.endsWith('.sql')).sort();
+  for(const file of migrationFiles) {
+    const sql=await readFile(path.join('drizzle',file),'utf8');
+    await db.batch(sql.split(/-->\s*statement-breakpoint/g).map(s=>s.trim()).filter(Boolean).map(s=>db.prepare(s)));
+  }
   const page=await mf.dispatchFetch('https://test.local/');
   assert.equal(page.status,200);
   checkCsp(page);
@@ -81,14 +84,24 @@ try {
   }
   const hashSets=cspSamples.map(sample=>JSON.stringify(sample.hashes));
   console.log(`Inline script SHA-256 measurement: ${new Set(hashSets).size===1?'stable':'varies'} across ${cspSamples.length} responses (${cspSamples.map(({path:samplePath,status,hashes})=>`${samplePath}=${status}:${hashes.length}`).join(', ')}).`);
-  async function send(endpoint,body,cookie,method='POST') {
-    return mf.dispatchFetch('https://test.local'+endpoint,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':'203.0.113.9',...(cookie?{Cookie:cookie}:{})},body:JSON.stringify(body)});
+  async function send(endpoint,body,cookie,method='POST',viewKey) {
+    return mf.dispatchFetch('https://test.local'+endpoint,{method,headers:{Origin:'https://test.local','Content-Type':'application/json','CF-Connecting-IP':'203.0.113.9',...(cookie?{Cookie:cookie}:{}),...(viewKey?{'X-View-Key':viewKey}:{})},body:JSON.stringify(body)});
   }
-  const created=await send('/api/calendars',{name:'build smoke'});assert.equal(created.status,201);
+  const legacyId='00000000-0000-4000-8000-000000000003';
+  await db.prepare('INSERT INTO calendars (id,name,view_key_hash) VALUES (?,?,NULL)').bind(legacyId,'legacy feed').run();
+  assert.equal((await mf.dispatchFetch(`https://test.local/api/calendars/${legacyId}/feed`)).status,200,'legacy feeds remain readable without a view key');
+  const created=await send('/api/calendars',{name:'build smoke',viewKey:'v'.repeat(43)});assert.equal(created.status,201);
   const cid=(await created.json()).calendar.id;
-  const joined=await send(`/api/calendars/${cid}/members`,{name:'member',secret:'a'.repeat(43)});assert.equal(joined.status,201);
+  const feedUrl=`https://test.local/api/calendars/${cid}/feed`;
+  assert.equal((await mf.dispatchFetch(feedUrl)).status,404,'protected feed rejects a missing key');
+  assert.equal((await mf.dispatchFetch(`${feedUrl}?k=${'x'.repeat(43)}`)).status,404,'protected feed rejects a wrong key');
+  assert.equal((await mf.dispatchFetch(`${feedUrl}?k=${'v'.repeat(43)}`)).status,200,'current key grants feed access');
+  const joined=await send(`/api/calendars/${cid}/members`,{name:'member',secret:'a'.repeat(43)},undefined,'POST','v'.repeat(43));assert.equal(joined.status,201);
   assert.ok(joined.headers.get('set-cookie').includes('Secure'));
   const cookie=joined.headers.get('set-cookie').split(';')[0];
+  const shareRotated=await send(`/api/calendars/${cid}/share`,{confirm:true,key:'w'.repeat(43),expectedKey:'v'.repeat(43)},cookie,'PATCH');assert.equal(shareRotated.status,200);
+  assert.equal((await mf.dispatchFetch(`${feedUrl}?k=${'v'.repeat(43)}`)).status,404,'share rotation revokes the old feed URL');
+  assert.equal((await mf.dispatchFetch(`${feedUrl}?k=${'w'.repeat(43)}`)).status,200,'new share key grants the new feed URL');
   const rotated=await send(`/api/calendars/${cid}/session`,{confirm:true,secret:'b'.repeat(43)},cookie,'PATCH');assert.equal(rotated.status,200);
   assert.equal(rotated.headers.get('cache-control'),'no-store');await rotated.arrayBuffer();
   assert.equal((await send(`/api/calendars/${cid}/session`,{secret:'a'.repeat(43)})).status,401);

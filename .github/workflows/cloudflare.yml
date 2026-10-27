@@ -46,14 +46,17 @@ jobs:
       - name: Run unit tests
         run: node --test tests/*.test.mjs
 
-      - name: Check calendar API with a temporary database
+      - name: Apply every SQL migration to ephemeral D1 and check calendar API
         run: node tests/run-isolated.mjs
 
-      - name: Build and validate production configuration
+      - name: Build and validate Worker artifacts
         run: |
           node scripts/run-framework.mjs build
           node tests/security-build-smoke.mjs
-          node scripts/cloudflare-update.mjs --prepare-only
+
+      - name: Validate production migration baseline and prepare deployment config
+        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+        run: node scripts/cloudflare-update.mjs --prepare-only
 
       - name: Check deployment setup
         id: deployment

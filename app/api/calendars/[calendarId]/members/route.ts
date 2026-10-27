@@ -18,6 +18,7 @@ export async function POST(request: Request, { params }: Context) {
     requireKeys(body, ["name", "secret"]);
     const name = requiredString(body.name, "お名前", 40);
     const secret = validateSecret(body.secret);
+    const viewKey = request.headers.get("X-View-Key");
     const db = getDb();
     const [calendar] = await db.select({ id: calendars.id }).from(calendars).where(eq(calendars.id, calendarId)).limit(1);
     if (!calendar) throw new HttpError(404, "カレンダーが見つかりません。");
@@ -30,7 +31,8 @@ export async function POST(request: Request, { params }: Context) {
     const id = crypto.randomUUID();
     const colorCase = sql`CASE ((SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) % ${MEMBER_COLORS.length}) ${sql.join(MEMBER_COLORS.map((color, index) => sql`WHEN ${index} THEN ${color}`), sql` `)} END`;
     try {
-      await db.run(sql`INSERT INTO members (member_id, calendar_id, name, color, secret_hash) SELECT ${id}, ${calendarId}, ${name}, ${colorCase}, ${secretHash} WHERE (SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) < ${LIMITS.members}`);
+      const viewHash = viewKey ? await hashSecret(viewKey) : "";
+      await db.run(sql`INSERT INTO members (member_id, calendar_id, name, color, secret_hash) SELECT ${id}, ${calendarId}, ${name}, ${colorCase}, ${secretHash} WHERE (SELECT COUNT(*) FROM members WHERE calendar_id = ${calendarId}) < ${LIMITS.members} AND EXISTS (SELECT 1 FROM calendars WHERE id = ${calendarId} AND (view_key_hash IS NULL OR view_key_hash = ${viewHash}))`);
     } catch (error) {
       // A simultaneous retry can race on the calendar/secret unique index.
       const raced = await findMemberBySecret(calendarId, secret);
@@ -39,7 +41,11 @@ export async function POST(request: Request, { params }: Context) {
       return json({ member: raced }, 200, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
     }
     const member = await findMemberBySecret(calendarId, secret);
-    if (!member) throw new HttpError(409, `参加者は${LIMITS.members}人までです。`);
+    if (!member) {
+      const [stillExists] = await db.select({ viewKeyHash: calendars.viewKeyHash }).from(calendars).where(eq(calendars.id, calendarId)).limit(1);
+      if (!stillExists || (stillExists.viewKeyHash !== null && (!viewKey || await hashSecret(viewKey) !== stillExists.viewKeyHash))) throw new HttpError(404, "カレンダーが見つかりません。");
+      throw new HttpError(409, `参加者は${LIMITS.members}人までです。`);
+    }
     return json({ member }, 201, { "Set-Cookie": sessionCookie(request, calendarId, secret) });
   } catch (error) {
     return fail(error);
